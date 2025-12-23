@@ -1,96 +1,66 @@
 #!imagura2_async_fixed.py
+"""Imagura - Fast async image viewer."""
 from __future__ import annotations
-import os, sys, time, ctypes, atexit, traceback, struct, hashlib
+import os
+import sys
+import ctypes
+import atexit
+import traceback
 from dataclasses import dataclass, field
 from collections import OrderedDict, deque
 from typing import List, Tuple, Optional, Deque, Callable, Any
 from queue import PriorityQueue, Empty
 from threading import Thread, Lock
-from enum import IntEnum
 import math
 
-TARGET_FPS = 120
-ANIM_SWITCH_KEYS_MS = 700
-ANIM_SWITCH_GALLERY_MS = 10
-ANIM_TOGGLE_ZOOM_MS = 150
-ANIM_OPEN_MS = 700
-ANIM_ZOOM_MS = 100
-FIT_DEFAULT_SCALE = 0.95
-FIT_OPEN_SCALE = 0.60
-OPEN_ALPHA_START = 0.4
-ZOOM_STEP_KEYS = 0.01
-ZOOM_STEP_WHEEL = 0.1
-CLOSE_BTN_RADIUS = 28
-CLOSE_BTN_MARGIN = 20
-CLOSE_BTN_ALPHA_MIN = 0.0
-CLOSE_BTN_ALPHA_FAR = 0.1
-CLOSE_BTN_ALPHA_MAX = 0.5
-CLOSE_BTN_ALPHA_HOVER = 1.0
-CLOSE_BTN_BG_ALPHA_MAX = 0.5
-NAV_BTN_RADIUS = 40
-NAV_BTN_BG_ALPHA_MAX = 0.5
-MAX_IMAGE_DIMENSION = 8192
-MAX_FILE_SIZE_MB = 200
-HEAVY_FILE_SIZE_MB = 10
-HEAVY_MIN_SHORT_SIDE = 4000
-GALLERY_HEIGHT_FRAC = 0.12
-GALLERY_TRIGGER_FRAC = 0.08
-GALLERY_SLIDE_MS = 150
-GALLERY_THUMB_SPACING = 20
-GALLERY_MIN_SCALE = 0.7
-GALLERY_MIN_ALPHA = 0.3
-THUMB_CACHE_LIMIT = 400
-THUMB_CACHE_DIR = ".imagura_cache"
-THUMB_PADDING = 6
-THUMB_PRELOAD_SPAN = 40
-THUMB_BUILD_BUDGET_PER_FRAME = 2
-DOUBLE_CLICK_TIME_MS = 300
-IDLE_THRESHOLD_SECONDS = 0.5
-ASYNC_WORKERS = 10
-BG_MODES = [
-    {"color": (0, 0, 0), "opacity": 0.5, "blur": True},
-    {"color": (0, 0, 0), "opacity": 1.0, "blur": False},
-    {"color": (255, 255, 255), "opacity": 1.0, "blur": False},
-    {"color": (255, 255, 255), "opacity": 0.5, "blur": True},
-]
-IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".qoi"}
+# Import from new modules
+from imagura.config import (
+    TARGET_FPS, ASYNC_WORKERS,
+    ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS, ANIM_TOGGLE_ZOOM_MS,
+    ANIM_OPEN_MS, ANIM_ZOOM_MS, GALLERY_SLIDE_MS,
+    FIT_DEFAULT_SCALE, FIT_OPEN_SCALE, OPEN_ALPHA_START,
+    ZOOM_STEP_KEYS, ZOOM_STEP_WHEEL,
+    CLOSE_BTN_RADIUS, CLOSE_BTN_MARGIN, CLOSE_BTN_ALPHA_MIN,
+    CLOSE_BTN_ALPHA_FAR, CLOSE_BTN_ALPHA_MAX, CLOSE_BTN_ALPHA_HOVER,
+    CLOSE_BTN_BG_ALPHA_MAX, NAV_BTN_RADIUS, NAV_BTN_BG_ALPHA_MAX,
+    MAX_IMAGE_DIMENSION, MAX_FILE_SIZE_MB,
+    GALLERY_HEIGHT_FRAC, GALLERY_TRIGGER_FRAC, GALLERY_THUMB_SPACING,
+    GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA, GALLERY_SETTLE_DEBOUNCE_S,
+    THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
+    DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
+)
+from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic
+from imagura.rl_compat import (
+    rl, RL_VERSION, RL_WHITE,
+    make_rect as RL_Rect, make_vec2 as RL_V2, make_color as RL_Color,
+    draw_text as RL_DrawText, measure_text, load_image as rl_load_image,
+    get_texture_id, is_texture_valid,
+)
+from imagura.win_utils import (
+    WinBlur, get_work_area, get_short_path_name, get_window_handle_from_raylib,
+)
+from imagura.image_utils import (
+    probe_image_dimensions, is_heavy_image, list_images, get_thumb_cache_path,
+)
+from imagura.logging import log, now, increment_frame, get_frame
+from imagura.types import (
+    LoadPriority, LoadTask, UIEvent,
+    ViewParams, TextureInfo, ImageCache, BitmapThumb,
+)
+from imagura.view_math import (
+    compute_fit_scale, center_view_for, compute_fit_view,
+    clamp_pan as clamp_pan_pure, recompute_view_anchor_zoom as anchor_zoom_pure,
+    view_for_1to1_centered as view_1to1_pure, sanitize_view as sanitize_view_pure,
+)
+from imagura.animation import (
+    AnimationController, AnimationType,
+    ToggleZoomAnimation, ZoomAnimation,
+    create_toggle_zoom_animation, create_zoom_animation,
+)
 
-try:
-    import raylibpy as rl
-
-    RL_VER = "raylibpy"
-except Exception:
-    import raylib as rl
-
-    RL_VER = "python-raylib"
-
-_RL_WHITE = getattr(rl, "RAYWHITE", rl.WHITE)
-now = time.perf_counter
-
-
-class LoadPriority(IntEnum):
-    CURRENT = 0
-    NEIGHBOR = 1
-    GALLERY = 2
-
-
-@dataclass
-class LoadTask:
-    path: str
-    priority: LoadPriority
-    callback: Callable
-    timestamp: float = 0.0
-
-    def __lt__(self, other):
-        if self.priority != other.priority:
-            return self.priority < other.priority
-        return self.timestamp < other.timestamp
-
-
-@dataclass
-class UIEvent:
-    callback: Callable
-    args: tuple
+# Aliases for compatibility
+RL_VER = RL_VERSION
+_RL_WHITE = RL_WHITE
 
 
 class AsyncImageLoader:
@@ -168,254 +138,6 @@ class IdleDetector:
         return (now() - self.last_activity) >= self.threshold
 
 
-def probe_image_dimensions(filepath: str) -> Optional[Tuple[int, int]]:
-    ext = os.path.splitext(filepath)[1].lower()
-    try:
-        with open(filepath, 'rb') as f:
-            header = f.read(64 * 1024)
-
-        if ext in ('.jpg', '.jpeg'):
-            return _probe_jpeg(header)
-        elif ext == '.png':
-            return _probe_png(header)
-    except Exception:
-        pass
-    return None
-
-
-def _probe_jpeg(data: bytes) -> Optional[Tuple[int, int]]:
-    i = 0
-    while i + 9 < len(data):
-        if data[i] == 0xFF:
-            marker = data[i + 1]
-            if marker in (0xC0, 0xC1, 0xC2, 0xC3):
-                height = struct.unpack('>H', data[i + 5:i + 7])[0]
-                width = struct.unpack('>H', data[i + 7:i + 9])[0]
-                return (width, height)
-            elif marker not in (0x00, 0xFF) and i + 3 < len(data):
-                seg_len = struct.unpack('>H', data[i + 2:i + 4])[0]
-                i += 2 + seg_len
-            else:
-                i += 1
-        else:
-            i += 1
-    return None
-
-
-def _probe_png(data: bytes) -> Optional[Tuple[int, int]]:
-    if len(data) < 24 or data[:8] != b'\x89PNG\r\n\x1a\n':
-        return None
-    width = struct.unpack('>I', data[16:20])[0]
-    height = struct.unpack('>I', data[20:24])[0]
-    return (width, height)
-
-
-def is_heavy_image(filepath: str) -> bool:
-    try:
-        file_size_mb = os.path.getsize(filepath) / (1024 * 1024)
-        if file_size_mb >= HEAVY_FILE_SIZE_MB:
-            return True
-    except Exception:
-        pass
-
-    dims = probe_image_dimensions(filepath)
-    if dims:
-        w, h = dims
-        if min(w, h) >= HEAVY_MIN_SHORT_SIDE:
-            return True
-    return False
-
-
-def get_short_path_name(long_path: str) -> str:
-    try:
-        if sys.platform != 'win32':
-            return long_path
-
-        from ctypes import wintypes
-
-        _GetShortPathNameW = ctypes.windll.kernel32.GetShortPathNameW
-        _GetShortPathNameW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD]
-        _GetShortPathNameW.restype = wintypes.DWORD
-
-        output_buf_size = 0
-        while True:
-            output_buf = ctypes.create_unicode_buffer(output_buf_size)
-            needed = _GetShortPathNameW(long_path, output_buf, output_buf_size)
-            if needed == 0:
-                return long_path
-            if needed <= output_buf_size:
-                return output_buf.value
-            output_buf_size = needed
-    except Exception:
-        return long_path
-
-
-class _CTypesRect(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_float), ("y", ctypes.c_float), ("width", ctypes.c_float), ("height", ctypes.c_float)]
-
-
-class _CTypesVec2(ctypes.Structure):
-    _fields_ = [("x", ctypes.c_float), ("y", ctypes.c_float)]
-
-
-def RL_Rect(x, y, w, h):
-    if hasattr(rl, 'Rectangle'):
-        try:
-            return rl.Rectangle(x, y, w, h)
-        except Exception:
-            pass
-    if hasattr(rl, 'ffi'):
-        r = rl.ffi.new("Rectangle *")
-        r[0].x = float(x)
-        r[0].y = float(y)
-        r[0].width = float(w)
-        r[0].height = float(h)
-        return r[0]
-    return _CTypesRect(float(x), float(y), float(w), float(h))
-
-
-def RL_V2(x, y):
-    if hasattr(rl, 'Vector2'):
-        try:
-            return rl.Vector2(x, y)
-        except Exception:
-            pass
-    if hasattr(rl, 'ffi'):
-        v = rl.ffi.new("Vector2 *")
-        v[0].x = float(x)
-        v[0].y = float(y)
-        return v[0]
-    return _CTypesVec2(float(x), float(y))
-
-
-def RL_DrawText(text: str, x: int, y: int, size: int, color):
-    try:
-        rl.DrawText(text, x, y, size, color)
-    except TypeError:
-        rl.DrawText(text.encode('utf-8'), x, y, size, color)
-
-
-def RL_Color(r: int, g: int, b: int, a: int):
-    ctor = getattr(rl, "Color", None)
-    if ctor:
-        try:
-            return ctor(int(r), int(g), int(b), int(a))
-        except Exception:
-            pass
-    base = rl.WHITE if (int(r) + int(g) + int(b)) >= 384 else rl.BLACK
-    alpha = max(0.0, min(1.0, int(a) / 255.0))
-    try:
-        return rl.Fade(base, float(alpha))
-    except Exception:
-        return base
-
-
-_start = now()
-_frame = 0
-
-
-def log(msg: str):
-    t = now() - _start
-    line = f"[{t:7.3f}s F{_frame:06d}] {msg}\n"
-    try:
-        sys.stdout.write(line)
-        sys.stdout.flush()
-    except Exception:
-        try:
-            sys.stderr.write(line)
-            sys.stderr.flush()
-        except Exception:
-            pass
-
-
-class WinBlur:
-    DWMWA_SYSTEMBACKDROP_TYPE = 38
-    DWMSBT_MAINWINDOW = 2
-    DWMSBT_TRANSIENTWINDOW = 3
-
-    @staticmethod
-    def try_set_system_backdrop(hwnd, kind: int) -> bool:
-        try:
-            dwmapi = ctypes.windll.dwmapi
-            value = ctypes.c_int(kind)
-            res = dwmapi.DwmSetWindowAttribute(ctypes.c_void_p(hwnd), ctypes.c_uint(WinBlur.DWMWA_SYSTEMBACKDROP_TYPE),
-                                               ctypes.byref(value), ctypes.sizeof(value))
-            return res == 0
-        except Exception:
-            return False
-
-    @staticmethod
-    def set_legacy_blur(hwnd, enabled: bool):
-        try:
-            user32 = ctypes.windll.user32
-
-            class ACCENT_POLICY(ctypes.Structure):
-                _fields_ = [("AccentState", ctypes.c_int), ("AccentFlags", ctypes.c_int),
-                            ("GradientColor", ctypes.c_uint), ("AnimationId", ctypes.c_int)]
-
-            class WINDOWCOMPOSITIONATTRIBDATA(ctypes.Structure):
-                _fields_ = [("Attribute", ctypes.c_int), ("Data", ctypes.c_void_p), ("SizeOfData", ctypes.c_size_t)]
-
-            WCA_ACCENT_POLICY = 19
-            ACCENT_ENABLE_BLURBEHIND = 3
-            ACCENT_DISABLED = 0
-            accent = ACCENT_POLICY()
-            accent.AccentState = ACCENT_ENABLE_BLURBEHIND if enabled else ACCENT_DISABLED
-            accent.AccentFlags = 2
-            accent.GradientColor = 0
-            data = WINDOWCOMPOSITIONATTRIBDATA()
-            data.Attribute = WCA_ACCENT_POLICY
-            data.Data = ctypes.addressof(accent)
-            data.SizeOfData = ctypes.sizeof(accent)
-            user32.SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
-            return True
-        except Exception:
-            return False
-
-    @staticmethod
-    def enable(hwnd):
-        if not hwnd:
-            return
-        if not WinBlur.try_set_system_backdrop(hwnd, WinBlur.DWMSBT_MAINWINDOW):
-            WinBlur.try_set_system_backdrop(hwnd, WinBlur.DWMSBT_TRANSIENTWINDOW)
-            WinBlur.set_legacy_blur(hwnd, True)
-
-    @staticmethod
-    def disable(hwnd):
-        if not hwnd:
-            return
-        WinBlur.set_legacy_blur(hwnd, False)
-
-
-@dataclass
-class TextureInfo:
-    tex: rl.Texture2D
-    w: int
-    h: int
-    path: str = ""
-
-
-@dataclass
-class ViewParams:
-    scale: float = 1.0
-    offx: float = 0.0
-    offy: float = 0.0
-
-
-@dataclass
-class ImageCache:
-    prev: Optional[TextureInfo] = None
-    curr: Optional[TextureInfo] = None
-    next: Optional[TextureInfo] = None
-
-
-@dataclass
-class BitmapThumb:
-    texture: Optional[rl.Texture2D] = None
-    size: Tuple[int, int] = (0, 0)
-    src_path: str = ""
-    ready: bool = False
-
 
 @dataclass
 class AppState:
@@ -464,6 +186,11 @@ class AppState:
     zoom_anim_t0: float = 0.0
     zoom_anim_from: ViewParams = field(default_factory=ViewParams)
     zoom_anim_to: ViewParams = field(default_factory=ViewParams)
+    toggle_zoom_active: bool = False
+    toggle_zoom_t0: float = 0.0
+    toggle_zoom_from: ViewParams = field(default_factory=ViewParams)
+    toggle_zoom_to: ViewParams = field(default_factory=ViewParams)
+    toggle_zoom_target_state: int = 0
     async_loader: Optional[AsyncImageLoader] = None
     idle_detector: Optional[IdleDetector] = None
     loading_current: bool = False
@@ -477,61 +204,6 @@ class AppState:
     pending_switch_duration_ms: int = field(default=ANIM_SWITCH_KEYS_MS)
 
 
-def get_thumb_cache_path(filepath: str) -> str:
-    try:
-        stat = os.stat(filepath)
-        key_data = f"{filepath}|{stat.st_mtime_ns}|{stat.st_size}".encode('utf-8')
-    except Exception:
-        key_data = filepath.encode('utf-8')
-
-    cache_key = hashlib.sha1(key_data).hexdigest()
-    os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
-    return os.path.join(THUMB_CACHE_DIR, f"{cache_key}_thumb.qoi")
-
-
-def clamp(v, a, b):
-    return a if v < a else b if v > b else v
-
-
-def lerp(a, b, t):
-    t = 0.0 if t < 0 else 1.0 if t > 1 else t
-    return a + (b - a) * t
-
-
-def ease_out_quad(t: float) -> float:
-    if t <= 0.0:
-        return 0.0
-    if t >= 1.0:
-        return 1.0
-    return 1.0 - (1.0 - t) * (1.0 - t)
-
-
-def ease_in_out_cubic(t: float) -> float:
-    if t <= 0.0:
-        return 0.0
-    if t >= 1.0:
-        return 1.0
-    if t < 0.5:
-        return 4.0 * t * t * t
-    else:
-        p = 2.0 * t - 2.0
-        return 1.0 + 0.5 * p * p * p
-
-
-def raylib_get_hwnd() -> Optional[int]:
-    try:
-        if hasattr(rl, "get_window_handle"):
-            return int(ctypes.cast(rl.get_window_handle(), ctypes.c_void_p).value or 0)
-        if hasattr(rl, "GetWindowHandle"):
-            return int(ctypes.cast(rl.GetWindowHandle(), ctypes.c_void_p).value or 0)
-    except Exception:
-        pass
-    try:
-        user32 = ctypes.windll.user32
-        user32.FindWindowW.restype = ctypes.c_void_p
-        return int(user32.FindWindowW(None, "Viewer")) or None
-    except Exception:
-        return None
 
 
 def load_unicode_font(font_size: int = 24):
@@ -562,20 +234,6 @@ def load_unicode_font(font_size: int = 24):
     return None
 
 
-def get_work_area() -> Tuple[int, int, int, int]:
-    try:
-        user32 = ctypes.windll.user32
-
-        class RECT(ctypes.Structure):
-            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
-                        ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-
-        rect = RECT()
-        SPI_GETWORKAREA = 48
-        user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(rect), 0)
-        return rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top
-    except Exception:
-        return 0, 0, 0, 0
 
 
 def init_window_and_blur(state: AppState):
@@ -606,25 +264,12 @@ def init_window_and_blur(state: AppState):
         pass
     rl.SetTargetFPS(TARGET_FPS)
     state.screenW, state.screenH = rl.GetScreenWidth(), rl.GetScreenHeight()
-    state.hwnd = raylib_get_hwnd()
+    state.hwnd = get_window_handle_from_raylib()
     state.gallery_y = state.screenH
     state.unicode_font = None
     state.async_loader = AsyncImageLoader(load_image_cpu_only)
     state.idle_detector = IdleDetector()
     log(f"[INIT] RL_VER={RL_VER} workarea={w}x{h} window={state.screenW}x{state.screenH} hwnd={state.hwnd}")
-
-
-def list_images(dirpath: str) -> List[str]:
-    try:
-        names = sorted(os.listdir(dirpath))
-    except Exception:
-        return []
-    out = []
-    for n in names:
-        p = os.path.join(dirpath, n)
-        if os.path.isfile(p) and os.path.splitext(n)[1].lower() in IMG_EXTS:
-            out.append(p)
-    return out
 
 
 def _image_resize_mut(img, w: int, h: int):
@@ -730,29 +375,14 @@ def compute_fit_view(state, frac):
 
 
 def clamp_pan(view: ViewParams, img: TextureInfo, screenW: int, screenH: int) -> ViewParams:
-    vw = img.w * view.scale
-    vh = img.h * view.scale
-    if vw <= screenW:
-        view.offx = (screenW - vw) / 2.0
-    else:
-        view.offx = clamp(view.offx, screenW - vw, 0.0)
-    if vh <= screenH:
-        view.offy = (screenH - vh) / 2.0
-    else:
-        view.offy = clamp(view.offy, screenH - vh, 0.0)
-    return view
+    """Wrapper for clamp_pan_pure that accepts TextureInfo."""
+    return clamp_pan_pure(view, img.w, img.h, screenW, screenH)
 
 
 def recompute_view_anchor_zoom(view: ViewParams, new_scale: float, anchor: Tuple[int, int],
                                img: TextureInfo) -> ViewParams:
-    ax, ay = anchor
-    old_scale = view.scale if view.scale and view.scale > 1e-6 else 1e-6
-    wx = (ax - view.offx) / old_scale
-    wy = (ay - view.offy) / old_scale
-    nv = ViewParams(scale=max(0.01, float(new_scale)))
-    nv.offx = ax - wx * nv.scale
-    nv.offy = ay - wy * nv.scale
-    return nv
+    """Wrapper for anchor_zoom_pure that accepts TextureInfo."""
+    return anchor_zoom_pure(view, new_scale, anchor, img.w, img.h)
 
 
 def start_zoom_animation(state: AppState, target_view: ViewParams):
@@ -1235,9 +865,6 @@ def update_gallery_scroll(state: AppState):
     state.gallery_center_index += diff * speed
 
 
-GALLERY_SETTLE_DEBOUNCE_S = 0.12
-
-
 def reconcile_gallery_target(state: AppState):
     tgt = state.gallery_target_index
     if tgt is None:
@@ -1610,33 +1237,16 @@ def process_switch_queue(state: AppState):
 
 
 def view_for_1to1_centered(state: AppState) -> ViewParams:
+    """Get 1:1 centered view for current image."""
     ti = state.cache.curr
     if not ti:
         return state.view
-    return center_view_for(1.0, ti.w, ti.h, state.screenW, state.screenH)
+    return view_1to1_pure(ti.w, ti.h, state.screenW, state.screenH)
 
 
 def sanitize_view(state: AppState, view: ViewParams, ti: TextureInfo) -> ViewParams:
-    v = ViewParams(view.scale, view.offx, view.offy)
-
-    centered = center_view_for(v.scale, ti.w, ti.h, state.screenW, state.screenH)
-
-    if abs(v.offx) < 5.0 and abs(v.offy) < 5.0:
-        log(f"[SANITIZE] Near-zero offsets ({v.offx:.1f},{v.offy:.1f}) at scale={v.scale:.3f} -> centering to ({centered.offx:.1f},{centered.offy:.1f})")
-        return centered
-
-    if (abs(v.offx) < 5.0 and abs(v.offy) > 50.0) or (abs(v.offy) < 5.0 and abs(v.offx) > 50.0):
-        log(f"[SANITIZE] Asymmetric offsets ({v.offx:.1f},{v.offy:.1f}) at scale={v.scale:.3f} -> centering to ({centered.offx:.1f},{centered.offy:.1f})")
-        return centered
-
-    if abs(v.scale - 1.0) < 0.01:
-        centered_1to1 = view_for_1to1_centered(state)
-        if abs(v.offx - centered_1to1.offx) > 50 or abs(v.offy - centered_1to1.offy) > 50:
-            log(f"[SANITIZE] 1:1 with bad offsets ({v.offx:.1f},{v.offy:.1f}) vs centered ({centered_1to1.offx:.1f},{centered_1to1.offy:.1f}) -> fixing")
-            return centered_1to1
-
-    v = clamp_pan(v, ti, state.screenW, state.screenH)
-    return v
+    """Wrapper for sanitize_view_pure that uses AppState dimensions."""
+    return sanitize_view_pure(view, ti.w, ti.h, state.screenW, state.screenH)
 
 
 def save_view_for_path(state: AppState, path: str, view: ViewParams):
@@ -1653,7 +1263,14 @@ def save_view_for_path(state: AppState, path: str, view: ViewParams):
         log(f"[SAVE_VIEW] {os.path.basename(path)}: scale={v.scale:.3f} off=({v.offx:.1f},{v.offy:.1f})")
 
 
-def cycle_zoom_state(state: AppState):
+def start_toggle_zoom_animation(state: AppState):
+    """Start non-blocking toggle zoom animation (F key / double-click)."""
+    if state.toggle_zoom_active:
+        return  # Already animating
+
+    if not state.cache.curr:
+        return
+
     next_state = {2: 0, 0: 1, 1: 2}[state.zoom_state_cycle]
 
     if next_state == 0:
@@ -1667,41 +1284,50 @@ def cycle_zoom_state(state: AppState):
         else:
             target = state.last_fit_view
 
-    t0 = now()
-    dur = ANIM_TOGGLE_ZOOM_MS / 1000.0
-    v_from = state.view
+    state.toggle_zoom_active = True
+    state.toggle_zoom_t0 = now()
+    state.toggle_zoom_from = ViewParams(state.view.scale, state.view.offx, state.view.offy)
+    state.toggle_zoom_to = target
+    state.toggle_zoom_target_state = next_state
+    log(f"[TOGGLE_ZOOM] Started: {state.zoom_state_cycle} -> {next_state}")
+
+
+def update_toggle_zoom_animation(state: AppState):
+    """Update toggle zoom animation each frame."""
+    if not state.toggle_zoom_active:
+        return
+
     ti = state.cache.curr
+    if not ti:
+        state.toggle_zoom_active = False
+        return
 
-    while True:
-        if rl.WindowShouldClose():
-            break
-        rl.BeginDrawing()
-        apply_bg_mode(state)
-        t = (now() - t0) / dur
-        if t >= 1.0:
-            t = 1.0
-        t_eased = ease_in_out_cubic(t)
-        cur = ViewParams(
-            scale=lerp(v_from.scale, target.scale, t_eased),
-            offx=lerp(v_from.offx, target.offx, t_eased),
-            offy=lerp(v_from.offy, target.offy, t_eased),
-        )
-        state.view = clamp_pan(cur, ti, state.screenW, state.screenH)
-        render_image(state)
-        draw_close_button(state)
-        rl.EndDrawing()
-        if t >= 1.0:
-            break
+    t = (now() - state.toggle_zoom_t0) / (ANIM_TOGGLE_ZOOM_MS / 1000.0)
 
-    state.zoom_state_cycle = next_state
-    state.is_zoomed = (state.view.scale > state.last_fit_view.scale)
+    if t >= 1.0:
+        # Animation finished
+        state.toggle_zoom_active = False
+        state.view = clamp_pan(state.toggle_zoom_to, ti, state.screenW, state.screenH)
+        state.zoom_state_cycle = state.toggle_zoom_target_state
+        state.is_zoomed = (state.view.scale > state.last_fit_view.scale)
 
-    if state.index < len(state.current_dir_images):
-        path = state.current_dir_images[state.index]
-        save_view_for_path(state, path, state.view)
-        if state.zoom_state_cycle == 2:
-            state.user_zoom_memory[path] = ViewParams(state.view.scale, state.view.offx, state.view.offy)
-            log(f"[CYCLE_ZOOM] Saved USER view: scale={state.view.scale:.3f}")
+        if state.index < len(state.current_dir_images):
+            path = state.current_dir_images[state.index]
+            save_view_for_path(state, path, state.view)
+            if state.zoom_state_cycle == 2:
+                state.user_zoom_memory[path] = ViewParams(state.view.scale, state.view.offx, state.view.offy)
+                log(f"[TOGGLE_ZOOM] Saved USER view: scale={state.view.scale:.3f}")
+
+        log(f"[TOGGLE_ZOOM] Finished: state={state.zoom_state_cycle} scale={state.view.scale:.3f}")
+        return
+
+    t_eased = ease_in_out_cubic(t)
+    cur = ViewParams(
+        scale=lerp(state.toggle_zoom_from.scale, state.toggle_zoom_to.scale, t_eased),
+        offx=lerp(state.toggle_zoom_from.offx, state.toggle_zoom_to.offx, t_eased),
+        offy=lerp(state.toggle_zoom_from.offy, state.toggle_zoom_to.offy, t_eased),
+    )
+    state.view = clamp_pan(cur, ti, state.screenW, state.screenH)
 
 
 def apply_bg_opacity_anim(state: AppState):
@@ -1728,8 +1354,6 @@ def detect_double_click(state: AppState, x: int, y: int) -> bool:
 
 
 def main():
-    global _frame
-
     log("[MAIN] Starting application")
 
     start_path = None
@@ -1802,7 +1426,7 @@ def main():
 
     log(f"[START] Starting main loop")
     log(f"[DIR] {dirpath} files={len(images)} start={state.index} -> {os.path.basename(images[state.index])}")
-    atexit.register(lambda: log(f"[EXIT] frames={_frame} thumbs={len(state.thumb_cache)} q={len(state.thumb_queue)}"))
+    atexit.register(lambda: log(f"[EXIT] frames={get_frame()} thumbs={len(state.thumb_cache)} q={len(state.thumb_queue)}"))
 
     font_loaded = False
     blur_enabled = False
@@ -1833,6 +1457,7 @@ def main():
 
             process_deferred_unloads(state)
             update_zoom_animation(state)
+            update_toggle_zoom_animation(state)
             process_switch_queue(state)
             apply_bg_opacity_anim(state)
             update_close_button_alpha(state)
@@ -1868,7 +1493,7 @@ def main():
                 state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
                 state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
 
-            if state.cache.curr and not state.open_anim_active:
+            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 if rl.IsKeyDown(rl.KEY_UP):
                     nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 + ZOOM_STEP_KEYS),
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
@@ -1894,7 +1519,7 @@ def main():
                         state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
             wheel = rl.GetMouseWheelMove()
-            if wheel != 0.0 and state.cache.curr and not state.open_anim_active:
+            if wheel != 0.0 and state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 if is_mouse_over_gallery(state):
                     n = len(state.current_dir_images)
                     base = state.gallery_target_index if state.gallery_target_index is not None else state.index
@@ -1922,14 +1547,14 @@ def main():
             mid_bot = state.screenH * 0.66
             in_mid = (mid_left <= mouse.x <= mid_right and mid_top <= mouse.y <= mid_bot)
 
-            if rl.IsKeyPressed(rl.KEY_F):
-                cycle_zoom_state(state)
+            if rl.IsKeyPressed(rl.KEY_F) and not state.toggle_zoom_active:
+                start_toggle_zoom_animation(state)
 
-            if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+            if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active:
                 if detect_double_click(state, int(mouse.x), int(mouse.y)):
-                    cycle_zoom_state(state)
+                    start_toggle_zoom_animation(state)
 
-            if state.cache.curr and not state.open_anim_active:
+            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 img_rect = RL_Rect(state.view.offx, state.view.offy, state.cache.curr.w * state.view.scale,
                                    state.cache.curr.h * state.view.scale)
                 over_img = (
@@ -2022,7 +1647,7 @@ def main():
                     RL_DrawText(f"curr_tex=None", 12, hud_y + line_spacing * 3, 16, rl.LIGHTGRAY)
 
             rl.EndDrawing()
-            _frame += 1
+            increment_frame()
             if rl.IsKeyPressed(rl.KEY_ESCAPE):
                 break
             if should_close:
