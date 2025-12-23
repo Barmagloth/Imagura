@@ -21,13 +21,19 @@ from .commands import (
     ToggleHUD, ToggleFilename, CycleBackground,
     GalleryScroll, GalleryClick,
     CloseApp,
+    ShowContextMenu, HideContextMenu, ContextMenuClick,
+    ToolbarButtonClick,
+    RotateClockwise, RotateCounterClockwise, FlipHorizontal, CopyToClipboard,
 )
 from .config import (
     ZOOM_STEP_KEYS, ZOOM_STEP_WHEEL,
     ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS,
     GALLERY_HEIGHT_FRAC, GALLERY_TRIGGER_FRAC,
     CLOSE_BTN_RADIUS, CLOSE_BTN_MARGIN,
+    TOOLBAR_TRIGGER_FRAC, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
+    MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING,
 )
+from .state.ui import MenuItemId, ToolbarButtonId
 from .logging import now
 
 
@@ -47,6 +53,8 @@ class MouseState:
     left_pressed: bool = False
     left_released: bool = False
     left_down: bool = False
+    right_pressed: bool = False
+    right_released: bool = False
     wheel: float = 0.0
 
 
@@ -80,6 +88,8 @@ class InputHandler:
             left_pressed=rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT),
             left_released=rl.IsMouseButtonReleased(rl.MOUSE_BUTTON_LEFT),
             left_down=rl.IsMouseButtonDown(rl.MOUSE_BUTTON_LEFT),
+            right_pressed=rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT),
+            right_released=rl.IsMouseButtonReleased(rl.MOUSE_BUTTON_RIGHT),
             wheel=rl.GetMouseWheelMove(),
         )
 
@@ -136,6 +146,74 @@ class InputHandler:
         y2 = y1 + ti.h * v.scale
         return x1 <= mouse.x <= x2 and y1 <= mouse.y <= y2
 
+    def is_in_toolbar_zone(self, state: "AppState", mouse: MouseState) -> bool:
+        """Check if mouse is in toolbar trigger zone (top 5% of screen)."""
+        return mouse.y < state.screenH * TOOLBAR_TRIGGER_FRAC
+
+    def get_toolbar_button_at(self, state: "AppState", mouse: MouseState) -> int:
+        """Get toolbar button index at mouse position, or -1 if none."""
+        toolbar = state.ui.toolbar
+        if toolbar.alpha < 0.5:  # Only clickable when visible enough
+            return -1
+
+        n_buttons = len(toolbar.buttons)
+        total_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+        start_x = (state.screenW - total_width) // 2 + TOOLBAR_BTN_RADIUS
+        cy = TOOLBAR_HEIGHT // 2
+
+        for i in range(n_buttons):
+            cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+            dx = mouse.x - cx
+            dy = mouse.y - cy
+            if (dx * dx + dy * dy) <= (TOOLBAR_BTN_RADIUS * TOOLBAR_BTN_RADIUS):
+                return i
+        return -1
+
+    def is_in_context_menu(self, state: "AppState", mouse: MouseState) -> bool:
+        """Check if mouse is inside context menu."""
+        menu = state.ui.context_menu
+        if not menu.visible:
+            return False
+
+        n_items = len(menu.items)
+        menu_w = MENU_ITEM_WIDTH
+        menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
+
+        # Use same clamping as renderer
+        x = min(menu.x, state.screenW - menu_w - 5)
+        y = min(menu.y, state.screenH - menu_h - 5)
+        x = max(5, x)
+        y = max(5, y)
+
+        return x <= mouse.x <= x + menu_w and y <= mouse.y <= y + menu_h
+
+    def get_context_menu_item_at(self, state: "AppState", mouse: MouseState) -> int:
+        """Get context menu item index at mouse position, or -1 if none."""
+        menu = state.ui.context_menu
+        if not menu.visible:
+            return -1
+
+        n_items = len(menu.items)
+        menu_w = MENU_ITEM_WIDTH
+        menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
+
+        # Use same clamping as renderer
+        x = min(menu.x, state.screenW - menu_w - 5)
+        y = min(menu.y, state.screenH - menu_h - 5)
+        x = max(5, x)
+        y = max(5, y)
+
+        if not (x <= mouse.x <= x + menu_w):
+            return -1
+
+        # Check which item
+        item_start_y = y + MENU_PADDING
+        for i in range(n_items):
+            item_y = item_start_y + i * MENU_ITEM_HEIGHT
+            if item_y <= mouse.y < item_y + MENU_ITEM_HEIGHT:
+                return i
+        return -1
+
     def check_double_click(self, mouse: MouseState) -> bool:
         """Check for double-click. Updates internal state."""
         t = now()
@@ -158,6 +236,66 @@ class InputHandler:
         commands: List[Command] = []
         mouse = self.poll_mouse()
         context = self.get_context(state, mouse)
+
+        # ─── Context Menu Handling ───────────────────────────────────────────
+        menu = state.ui.context_menu
+        if menu.visible:
+            # Update hover state
+            menu.hover_index = self.get_context_menu_item_at(state, mouse)
+
+            # Left click on menu item
+            if mouse.left_pressed:
+                if menu.hover_index >= 0:
+                    item = menu.items[menu.hover_index]
+                    commands.append(ContextMenuClick(item_index=menu.hover_index))
+                    # Generate action command based on item
+                    if item.id == MenuItemId.COPY:
+                        commands.append(CopyToClipboard())
+                    return commands
+                else:
+                    # Click outside menu - close it
+                    commands.append(HideContextMenu())
+                    return commands
+
+            # Escape closes menu
+            if rl.IsKeyPressed(rl.KEY_ESCAPE):
+                commands.append(HideContextMenu())
+                return commands
+
+        # Right-click shows context menu (when no menu visible)
+        if mouse.right_pressed and not menu.visible:
+            commands.append(ShowContextMenu(x=int(mouse.x), y=int(mouse.y)))
+            return commands
+
+        # ─── Toolbar Handling ────────────────────────────────────────────────
+        toolbar = state.ui.toolbar
+
+        # Update toolbar visibility based on mouse position
+        if self.is_in_toolbar_zone(state, mouse):
+            toolbar.target_alpha = 1.0
+        else:
+            toolbar.target_alpha = 0.0
+
+        # Update toolbar hover
+        if toolbar.alpha > 0.1:
+            toolbar.hover_index = self.get_toolbar_button_at(state, mouse)
+        else:
+            toolbar.hover_index = -1
+
+        # Toolbar button click
+        if mouse.left_pressed and toolbar.hover_index >= 0:
+            btn = toolbar.buttons[toolbar.hover_index]
+            commands.append(ToolbarButtonClick(button_index=toolbar.hover_index))
+            # Generate action command based on button
+            if btn.id == ToolbarButtonId.ROTATE_CW:
+                commands.append(RotateClockwise())
+            elif btn.id == ToolbarButtonId.ROTATE_CCW:
+                commands.append(RotateCounterClockwise())
+            elif btn.id == ToolbarButtonId.FLIP_H:
+                commands.append(FlipHorizontal())
+            return commands
+
+        # ─── Regular Input Handling ──────────────────────────────────────────
 
         # Always check for close
         if rl.IsKeyPressed(self.key_close):
