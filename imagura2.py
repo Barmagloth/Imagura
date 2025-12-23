@@ -52,6 +52,11 @@ from imagura.view_math import (
     clamp_pan as clamp_pan_pure, recompute_view_anchor_zoom as anchor_zoom_pure,
     view_for_1to1_centered as view_1to1_pure, sanitize_view as sanitize_view_pure,
 )
+from imagura.animation import (
+    AnimationController, AnimationType,
+    ToggleZoomAnimation, ZoomAnimation,
+    create_toggle_zoom_animation, create_zoom_animation,
+)
 
 # Aliases for compatibility
 RL_VER = RL_VERSION
@@ -181,6 +186,11 @@ class AppState:
     zoom_anim_t0: float = 0.0
     zoom_anim_from: ViewParams = field(default_factory=ViewParams)
     zoom_anim_to: ViewParams = field(default_factory=ViewParams)
+    toggle_zoom_active: bool = False
+    toggle_zoom_t0: float = 0.0
+    toggle_zoom_from: ViewParams = field(default_factory=ViewParams)
+    toggle_zoom_to: ViewParams = field(default_factory=ViewParams)
+    toggle_zoom_target_state: int = 0
     async_loader: Optional[AsyncImageLoader] = None
     idle_detector: Optional[IdleDetector] = None
     loading_current: bool = False
@@ -1253,7 +1263,14 @@ def save_view_for_path(state: AppState, path: str, view: ViewParams):
         log(f"[SAVE_VIEW] {os.path.basename(path)}: scale={v.scale:.3f} off=({v.offx:.1f},{v.offy:.1f})")
 
 
-def cycle_zoom_state(state: AppState):
+def start_toggle_zoom_animation(state: AppState):
+    """Start non-blocking toggle zoom animation (F key / double-click)."""
+    if state.toggle_zoom_active:
+        return  # Already animating
+
+    if not state.cache.curr:
+        return
+
     next_state = {2: 0, 0: 1, 1: 2}[state.zoom_state_cycle]
 
     if next_state == 0:
@@ -1267,41 +1284,50 @@ def cycle_zoom_state(state: AppState):
         else:
             target = state.last_fit_view
 
-    t0 = now()
-    dur = ANIM_TOGGLE_ZOOM_MS / 1000.0
-    v_from = state.view
+    state.toggle_zoom_active = True
+    state.toggle_zoom_t0 = now()
+    state.toggle_zoom_from = ViewParams(state.view.scale, state.view.offx, state.view.offy)
+    state.toggle_zoom_to = target
+    state.toggle_zoom_target_state = next_state
+    log(f"[TOGGLE_ZOOM] Started: {state.zoom_state_cycle} -> {next_state}")
+
+
+def update_toggle_zoom_animation(state: AppState):
+    """Update toggle zoom animation each frame."""
+    if not state.toggle_zoom_active:
+        return
+
     ti = state.cache.curr
+    if not ti:
+        state.toggle_zoom_active = False
+        return
 
-    while True:
-        if rl.WindowShouldClose():
-            break
-        rl.BeginDrawing()
-        apply_bg_mode(state)
-        t = (now() - t0) / dur
-        if t >= 1.0:
-            t = 1.0
-        t_eased = ease_in_out_cubic(t)
-        cur = ViewParams(
-            scale=lerp(v_from.scale, target.scale, t_eased),
-            offx=lerp(v_from.offx, target.offx, t_eased),
-            offy=lerp(v_from.offy, target.offy, t_eased),
-        )
-        state.view = clamp_pan(cur, ti, state.screenW, state.screenH)
-        render_image(state)
-        draw_close_button(state)
-        rl.EndDrawing()
-        if t >= 1.0:
-            break
+    t = (now() - state.toggle_zoom_t0) / (ANIM_TOGGLE_ZOOM_MS / 1000.0)
 
-    state.zoom_state_cycle = next_state
-    state.is_zoomed = (state.view.scale > state.last_fit_view.scale)
+    if t >= 1.0:
+        # Animation finished
+        state.toggle_zoom_active = False
+        state.view = clamp_pan(state.toggle_zoom_to, ti, state.screenW, state.screenH)
+        state.zoom_state_cycle = state.toggle_zoom_target_state
+        state.is_zoomed = (state.view.scale > state.last_fit_view.scale)
 
-    if state.index < len(state.current_dir_images):
-        path = state.current_dir_images[state.index]
-        save_view_for_path(state, path, state.view)
-        if state.zoom_state_cycle == 2:
-            state.user_zoom_memory[path] = ViewParams(state.view.scale, state.view.offx, state.view.offy)
-            log(f"[CYCLE_ZOOM] Saved USER view: scale={state.view.scale:.3f}")
+        if state.index < len(state.current_dir_images):
+            path = state.current_dir_images[state.index]
+            save_view_for_path(state, path, state.view)
+            if state.zoom_state_cycle == 2:
+                state.user_zoom_memory[path] = ViewParams(state.view.scale, state.view.offx, state.view.offy)
+                log(f"[TOGGLE_ZOOM] Saved USER view: scale={state.view.scale:.3f}")
+
+        log(f"[TOGGLE_ZOOM] Finished: state={state.zoom_state_cycle} scale={state.view.scale:.3f}")
+        return
+
+    t_eased = ease_in_out_cubic(t)
+    cur = ViewParams(
+        scale=lerp(state.toggle_zoom_from.scale, state.toggle_zoom_to.scale, t_eased),
+        offx=lerp(state.toggle_zoom_from.offx, state.toggle_zoom_to.offx, t_eased),
+        offy=lerp(state.toggle_zoom_from.offy, state.toggle_zoom_to.offy, t_eased),
+    )
+    state.view = clamp_pan(cur, ti, state.screenW, state.screenH)
 
 
 def apply_bg_opacity_anim(state: AppState):
@@ -1431,6 +1457,7 @@ def main():
 
             process_deferred_unloads(state)
             update_zoom_animation(state)
+            update_toggle_zoom_animation(state)
             process_switch_queue(state)
             apply_bg_opacity_anim(state)
             update_close_button_alpha(state)
@@ -1466,7 +1493,7 @@ def main():
                 state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
                 state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
 
-            if state.cache.curr and not state.open_anim_active:
+            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 if rl.IsKeyDown(rl.KEY_UP):
                     nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 + ZOOM_STEP_KEYS),
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
@@ -1492,7 +1519,7 @@ def main():
                         state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
             wheel = rl.GetMouseWheelMove()
-            if wheel != 0.0 and state.cache.curr and not state.open_anim_active:
+            if wheel != 0.0 and state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 if is_mouse_over_gallery(state):
                     n = len(state.current_dir_images)
                     base = state.gallery_target_index if state.gallery_target_index is not None else state.index
@@ -1520,14 +1547,14 @@ def main():
             mid_bot = state.screenH * 0.66
             in_mid = (mid_left <= mouse.x <= mid_right and mid_top <= mouse.y <= mid_bot)
 
-            if rl.IsKeyPressed(rl.KEY_F):
-                cycle_zoom_state(state)
+            if rl.IsKeyPressed(rl.KEY_F) and not state.toggle_zoom_active:
+                start_toggle_zoom_animation(state)
 
-            if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+            if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active:
                 if detect_double_click(state, int(mouse.x), int(mouse.y)):
-                    cycle_zoom_state(state)
+                    start_toggle_zoom_animation(state)
 
-            if state.cache.curr and not state.open_anim_active:
+            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 img_rect = RL_Rect(state.view.offx, state.view.offy, state.cache.curr.w * state.view.scale,
                                    state.cache.curr.h * state.view.scale)
                 over_img = (
