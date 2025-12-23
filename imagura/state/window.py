@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Optional, Any
+from typing import Optional, Any, Tuple
 
 
 @dataclass
@@ -14,11 +14,11 @@ class WindowState:
     unicode_font: Optional[Any] = None
 
     @property
-    def size(self) -> tuple[int, int]:
+    def size(self) -> Tuple[int, int]:
         """Get window size as tuple."""
         return (self.screen_w, self.screen_h)
 
     @property
-    def center(self) -> tuple[int, int]:
+    def center(self) -> Tuple[int, int]:
         """Get window center point."""
         return (self.screen_w // 2, self.screen_h // 2)
