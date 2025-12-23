@@ -11,7 +11,6 @@ from collections import OrderedDict, deque
 from typing import List, Tuple, Optional, Deque, Callable, Any
 from queue import PriorityQueue, Empty
 from threading import Thread, Lock
-from enum import IntEnum
 import math
 
 # Import from new modules
@@ -30,7 +29,7 @@ from imagura.config import (
     THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
     DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
 )
-from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic, distance_squared
+from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic
 from imagura.rl_compat import (
     rl, RL_VERSION, RL_WHITE,
     make_rect as RL_Rect, make_vec2 as RL_V2, make_color as RL_Color,
@@ -44,35 +43,19 @@ from imagura.image_utils import (
     probe_image_dimensions, is_heavy_image, list_images, get_thumb_cache_path,
 )
 from imagura.logging import log, now, increment_frame, get_frame
+from imagura.types import (
+    LoadPriority, LoadTask, UIEvent,
+    ViewParams, TextureInfo, ImageCache, BitmapThumb,
+)
+from imagura.view_math import (
+    compute_fit_scale, center_view_for, compute_fit_view,
+    clamp_pan as clamp_pan_pure, recompute_view_anchor_zoom as anchor_zoom_pure,
+    view_for_1to1_centered as view_1to1_pure, sanitize_view as sanitize_view_pure,
+)
 
 # Aliases for compatibility
 RL_VER = RL_VERSION
 _RL_WHITE = RL_WHITE
-
-
-class LoadPriority(IntEnum):
-    CURRENT = 0
-    NEIGHBOR = 1
-    GALLERY = 2
-
-
-@dataclass
-class LoadTask:
-    path: str
-    priority: LoadPriority
-    callback: Callable
-    timestamp: float = 0.0
-
-    def __lt__(self, other):
-        if self.priority != other.priority:
-            return self.priority < other.priority
-        return self.timestamp < other.timestamp
-
-
-@dataclass
-class UIEvent:
-    callback: Callable
-    args: tuple
 
 
 class AsyncImageLoader:
@@ -149,37 +132,6 @@ class IdleDetector:
     def is_idle(self) -> bool:
         return (now() - self.last_activity) >= self.threshold
 
-
-
-
-@dataclass
-class TextureInfo:
-    tex: rl.Texture2D
-    w: int
-    h: int
-    path: str = ""
-
-
-@dataclass
-class ViewParams:
-    scale: float = 1.0
-    offx: float = 0.0
-    offy: float = 0.0
-
-
-@dataclass
-class ImageCache:
-    prev: Optional[TextureInfo] = None
-    curr: Optional[TextureInfo] = None
-    next: Optional[TextureInfo] = None
-
-
-@dataclass
-class BitmapThumb:
-    texture: Optional[rl.Texture2D] = None
-    size: Tuple[int, int] = (0, 0)
-    src_path: str = ""
-    ready: bool = False
 
 
 @dataclass
@@ -413,29 +365,14 @@ def compute_fit_view(state, frac):
 
 
 def clamp_pan(view: ViewParams, img: TextureInfo, screenW: int, screenH: int) -> ViewParams:
-    vw = img.w * view.scale
-    vh = img.h * view.scale
-    if vw <= screenW:
-        view.offx = (screenW - vw) / 2.0
-    else:
-        view.offx = clamp(view.offx, screenW - vw, 0.0)
-    if vh <= screenH:
-        view.offy = (screenH - vh) / 2.0
-    else:
-        view.offy = clamp(view.offy, screenH - vh, 0.0)
-    return view
+    """Wrapper for clamp_pan_pure that accepts TextureInfo."""
+    return clamp_pan_pure(view, img.w, img.h, screenW, screenH)
 
 
 def recompute_view_anchor_zoom(view: ViewParams, new_scale: float, anchor: Tuple[int, int],
                                img: TextureInfo) -> ViewParams:
-    ax, ay = anchor
-    old_scale = view.scale if view.scale and view.scale > 1e-6 else 1e-6
-    wx = (ax - view.offx) / old_scale
-    wy = (ay - view.offy) / old_scale
-    nv = ViewParams(scale=max(0.01, float(new_scale)))
-    nv.offx = ax - wx * nv.scale
-    nv.offy = ay - wy * nv.scale
-    return nv
+    """Wrapper for anchor_zoom_pure that accepts TextureInfo."""
+    return anchor_zoom_pure(view, new_scale, anchor, img.w, img.h)
 
 
 def start_zoom_animation(state: AppState, target_view: ViewParams):
@@ -1290,33 +1227,16 @@ def process_switch_queue(state: AppState):
 
 
 def view_for_1to1_centered(state: AppState) -> ViewParams:
+    """Get 1:1 centered view for current image."""
     ti = state.cache.curr
     if not ti:
         return state.view
-    return center_view_for(1.0, ti.w, ti.h, state.screenW, state.screenH)
+    return view_1to1_pure(ti.w, ti.h, state.screenW, state.screenH)
 
 
 def sanitize_view(state: AppState, view: ViewParams, ti: TextureInfo) -> ViewParams:
-    v = ViewParams(view.scale, view.offx, view.offy)
-
-    centered = center_view_for(v.scale, ti.w, ti.h, state.screenW, state.screenH)
-
-    if abs(v.offx) < 5.0 and abs(v.offy) < 5.0:
-        log(f"[SANITIZE] Near-zero offsets ({v.offx:.1f},{v.offy:.1f}) at scale={v.scale:.3f} -> centering to ({centered.offx:.1f},{centered.offy:.1f})")
-        return centered
-
-    if (abs(v.offx) < 5.0 and abs(v.offy) > 50.0) or (abs(v.offy) < 5.0 and abs(v.offx) > 50.0):
-        log(f"[SANITIZE] Asymmetric offsets ({v.offx:.1f},{v.offy:.1f}) at scale={v.scale:.3f} -> centering to ({centered.offx:.1f},{centered.offy:.1f})")
-        return centered
-
-    if abs(v.scale - 1.0) < 0.01:
-        centered_1to1 = view_for_1to1_centered(state)
-        if abs(v.offx - centered_1to1.offx) > 50 or abs(v.offy - centered_1to1.offy) > 50:
-            log(f"[SANITIZE] 1:1 with bad offsets ({v.offx:.1f},{v.offy:.1f}) vs centered ({centered_1to1.offx:.1f},{centered_1to1.offy:.1f}) -> fixing")
-            return centered_1to1
-
-    v = clamp_pan(v, ti, state.screenW, state.screenH)
-    return v
+    """Wrapper for sanitize_view_pure that uses AppState dimensions."""
+    return sanitize_view_pure(view, ti.w, ti.h, state.screenW, state.screenH)
 
 
 def save_view_for_path(state: AppState, path: str, view: ViewParams):
