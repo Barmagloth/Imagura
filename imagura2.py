@@ -57,6 +57,7 @@ from imagura.animation import (
     ToggleZoomAnimation, ZoomAnimation,
     create_toggle_zoom_animation, create_zoom_animation,
 )
+from imagura.state import AppState
 
 # Aliases for compatibility
 RL_VER = RL_VERSION
@@ -139,71 +140,8 @@ class IdleDetector:
 
 
 
-@dataclass
-class AppState:
-    screenW: int = 0
-    screenH: int = 0
-    hwnd: Optional[int] = None
-    unicode_font: Optional[any] = None
-    current_dir_images: List[str] = field(default_factory=list)
-    index: int = 0
-    cache: ImageCache = field(default_factory=ImageCache)
-    thumb_cache: "OrderedDict[str,BitmapThumb]" = field(default_factory=OrderedDict)
-    thumb_queue: Deque[str] = field(default_factory=deque)
-    to_unload: List[rl.Texture2D] = field(default_factory=list)
-    gallery_center_index: float = 0.0
-    gallery_y: float = 0.0
-    gallery_visible: bool = False
-    bg_mode_index: int = 0
-    bg_current_opacity: float = BG_MODES[0]["opacity"]
-    bg_target_opacity: float = BG_MODES[0]["opacity"]
-    last_fit_view: ViewParams = field(default_factory=ViewParams)
-    view: ViewParams = field(default_factory=ViewParams)
-    zoom_state_cycle: int = 1
-    is_zoomed: bool = False
-    is_panning: bool = False
-    pan_start_mouse: Tuple[float, float] = (0.0, 0.0)
-    pan_start_offset: Tuple[float, float] = (0.0, 0.0)
-    last_click_time: float = 0.0
-    last_click_pos: Tuple[int, int] = (0, 0)
-    show_hud: bool = False
-    show_filename: bool = False
-    view_memory: dict = field(default_factory=dict)
-    user_zoom_memory: dict = field(default_factory=dict)
-    nav_left_alpha: float = 0.0
-    nav_right_alpha: float = 0.0
-    close_btn_alpha: float = 0.0
-    open_anim_active: bool = False
-    open_anim_t0: float = 0.0
-    switch_anim_active: bool = False
-    switch_anim_t0: float = 0.0
-    switch_anim_duration_ms: int = 0
-    switch_anim_direction: int = 0
-    switch_anim_prev_tex: Optional[TextureInfo] = None
-    switch_anim_prev_view: ViewParams = field(default_factory=ViewParams)
-    switch_queue: Deque[Tuple[int, int]] = field(default_factory=deque)
-    zoom_anim_active: bool = False
-    zoom_anim_t0: float = 0.0
-    zoom_anim_from: ViewParams = field(default_factory=ViewParams)
-    zoom_anim_to: ViewParams = field(default_factory=ViewParams)
-    toggle_zoom_active: bool = False
-    toggle_zoom_t0: float = 0.0
-    toggle_zoom_from: ViewParams = field(default_factory=ViewParams)
-    toggle_zoom_to: ViewParams = field(default_factory=ViewParams)
-    toggle_zoom_target_state: int = 0
-    async_loader: Optional[AsyncImageLoader] = None
-    idle_detector: Optional[IdleDetector] = None
-    loading_current: bool = False
-    waiting_for_switch: bool = False
-    waiting_prev_snapshot: Optional[TextureInfo] = None
-    waiting_prev_view: ViewParams = field(default_factory=ViewParams)
-    pending_target_index: Optional[int] = None
-    pending_neighbors_load: bool = False
-    gallery_target_index: Optional[int] = None
-    gallery_last_wheel_time: float = 0.0
-    pending_switch_duration_ms: int = field(default=ANIM_SWITCH_KEYS_MS)
-
-
+# AppState is now imported from imagura.state (see imagura/state/app_state.py)
+# It uses composition of sub-states while providing backward-compatible properties.
 
 
 def load_unicode_font(font_size: int = 24):
