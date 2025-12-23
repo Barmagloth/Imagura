@@ -23,8 +23,11 @@ from .commands import ZoomIn, ZoomOut, WheelZoom, ToggleZoom
 from .commands import StartPan, UpdatePan, EndPan
 from .commands import ToggleHUD, ToggleFilename, CycleBackground
 from .commands import GalleryScroll
+from .commands import RotateClockwise, RotateCounterClockwise, FlipHorizontal, CopyToClipboard
+from .commands import ShowContextMenu, HideContextMenu, ContextMenuClick, ToolbarButtonClick
 from .rl_compat import rl
-from .config import TARGET_FPS, ANIM_SWITCH_KEYS_MS
+from .config import TARGET_FPS, ANIM_SWITCH_KEYS_MS, TOOLBAR_SLIDE_MS
+from .math_utils import lerp
 from .logging import log, now, increment_frame, get_frame
 from .types import ViewParams
 from .view_math import recompute_view_anchor_zoom as anchor_zoom, clamp_pan
@@ -57,6 +60,8 @@ class Application:
     on_start_zoom_animation: Optional[Callable[[ViewParams], None]] = None
     on_start_toggle_zoom: Optional[Callable[[], None]] = None
     on_preload_neighbors: Optional[Callable[[int, bool], None]] = None
+    on_transform_image: Optional[Callable[[str, bool], None]] = None  # ('rotate'|'flip_h', clockwise/True)
+    on_copy_to_clipboard: Optional[Callable[[], None]] = None
 
     # Update functions (from imagura2.py)
     update_functions: List[Callable[[AppState], None]] = field(default_factory=list)
@@ -219,17 +224,63 @@ class Application:
             self.state.gallery_last_wheel_time = now()
             return
 
+        # Context menu commands
+        if isinstance(cmd, (ShowContextMenu, HideContextMenu, ContextMenuClick)):
+            cmd.execute(self.state)
+            return
+
+        if isinstance(cmd, ToolbarButtonClick):
+            cmd.execute(self.state)
+            return
+
+        # Image transformation commands
+        if isinstance(cmd, (RotateClockwise, RotateCounterClockwise)):
+            if cmd.can_execute(self.state) and self.on_transform_image:
+                clockwise = isinstance(cmd, RotateClockwise)
+                self.on_transform_image('rotate', clockwise)
+                cmd.execute(self.state)
+            return
+
+        if isinstance(cmd, FlipHorizontal):
+            if cmd.can_execute(self.state) and self.on_transform_image:
+                self.on_transform_image('flip_h', True)
+                cmd.execute(self.state)
+            return
+
+        if isinstance(cmd, CopyToClipboard):
+            if cmd.can_execute(self.state) and self.on_copy_to_clipboard:
+                self.on_copy_to_clipboard()
+                cmd.execute(self.state)
+            return
+
         # Default: just execute
         cmd.execute(self.state)
 
     def _update(self) -> None:
         """Update all state (animations, loading, etc.)."""
+        # Update toolbar alpha animation
+        self._update_toolbar_alpha()
+
         # Call registered update functions
         for update_fn in self.update_functions:
             try:
                 update_fn(self.state)
             except Exception as e:
                 log(f"[APP][UPDATE][ERR] {e!r}")
+
+    def _update_toolbar_alpha(self) -> None:
+        """Animate toolbar visibility."""
+        toolbar = self.state.ui.toolbar
+        if abs(toolbar.alpha - toolbar.target_alpha) > 0.01:
+            # Smooth animation towards target
+            speed = 1000.0 / TOOLBAR_SLIDE_MS  # Per second
+            dt = rl.GetFrameTime()
+            if toolbar.target_alpha > toolbar.alpha:
+                toolbar.alpha = min(toolbar.target_alpha, toolbar.alpha + speed * dt)
+            else:
+                toolbar.alpha = max(toolbar.target_alpha, toolbar.alpha - speed * dt)
+        else:
+            toolbar.alpha = toolbar.target_alpha
 
     def _cleanup(self) -> None:
         """Clean up resources."""

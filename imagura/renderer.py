@@ -27,7 +27,10 @@ from .config import (
     GALLERY_HEIGHT_FRAC, GALLERY_THUMB_SPACING,
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA,
     ANIM_OPEN_MS, FIT_OPEN_SCALE, OPEN_ALPHA_START,
+    TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING, TOOLBAR_BG_ALPHA,
+    MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING, MENU_BG_ALPHA, MENU_HOVER_ALPHA,
 )
+from .state.ui import ToolbarButtonId
 from .logging import now
 
 
@@ -488,6 +491,168 @@ class Renderer:
             )
 
     # ═══════════════════════════════════════════════════════════════════════
+    # Top Toolbar
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def draw_toolbar(self, state: "AppState") -> None:
+        """Draw top toolbar with action buttons."""
+        toolbar = state.ui.toolbar
+        if toolbar.alpha < 0.01:
+            return
+
+        sw = state.screenW
+        alpha = toolbar.alpha
+
+        # Background panel
+        bg_alpha = int(255 * TOOLBAR_BG_ALPHA * alpha)
+        rl.DrawRectangle(0, 0, sw, TOOLBAR_HEIGHT, RL_Color(0, 0, 0, bg_alpha))
+
+        # Calculate button positions (centered)
+        n_buttons = len(toolbar.buttons)
+        total_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+        start_x = (sw - total_width) // 2 + TOOLBAR_BTN_RADIUS
+
+        cy = TOOLBAR_HEIGHT // 2
+
+        for i, btn in enumerate(toolbar.buttons):
+            cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+            is_hover = (i == toolbar.hover_index)
+
+            # Button background
+            btn_alpha = int(255 * alpha)
+            bg_btn_alpha = int(128 * alpha) if is_hover else int(80 * alpha)
+            rl.DrawCircle(cx, cy, TOOLBAR_BTN_RADIUS, RL_Color(0, 0, 0, bg_btn_alpha))
+            rl.DrawCircleLines(cx, cy, TOOLBAR_BTN_RADIUS, RL_Color(255, 255, 255, btn_alpha))
+
+            # Draw icon based on button type
+            self._draw_toolbar_icon(cx, cy, btn.id, RL_Color(255, 255, 255, btn_alpha))
+
+    def _draw_toolbar_icon(self, cx: int, cy: int, btn_id: ToolbarButtonId, color) -> None:
+        """Draw toolbar button icon."""
+        r = TOOLBAR_BTN_RADIUS * 0.45
+
+        if btn_id == ToolbarButtonId.ROTATE_CW:
+            # Clockwise arrow arc
+            self._draw_rotate_icon(cx, cy, r, clockwise=True, color=color)
+        elif btn_id == ToolbarButtonId.ROTATE_CCW:
+            # Counter-clockwise arrow arc
+            self._draw_rotate_icon(cx, cy, r, clockwise=False, color=color)
+        elif btn_id == ToolbarButtonId.FLIP_H:
+            # Horizontal flip icon (two arrows)
+            self._draw_flip_icon(cx, cy, r, color)
+
+    def _draw_rotate_icon(self, cx: int, cy: int, r: float, clockwise: bool, color) -> None:
+        """Draw rotation arrow icon."""
+        # Draw arc using line segments
+        import math
+        segments = 8
+        start_angle = -60 if clockwise else 120
+        arc_span = 240
+
+        points = []
+        for i in range(segments + 1):
+            angle = math.radians(start_angle + (arc_span * i / segments))
+            if not clockwise:
+                angle = math.radians(start_angle + 180 - (arc_span * i / segments))
+            px = cx + r * math.cos(angle)
+            py = cy + r * math.sin(angle)
+            points.append((px, py))
+
+        for i in range(len(points) - 1):
+            rl.DrawLineEx(RL_V2(points[i][0], points[i][1]),
+                         RL_V2(points[i+1][0], points[i+1][1]), 2.0, color)
+
+        # Arrow head at the end
+        end_x, end_y = points[-1]
+        arrow_size = r * 0.4
+        if clockwise:
+            # Arrow pointing down-right
+            rl.DrawLineEx(RL_V2(end_x, end_y),
+                         RL_V2(end_x - arrow_size, end_y - arrow_size * 0.5), 2.0, color)
+            rl.DrawLineEx(RL_V2(end_x, end_y),
+                         RL_V2(end_x + arrow_size * 0.3, end_y - arrow_size), 2.0, color)
+        else:
+            # Arrow pointing down-left
+            rl.DrawLineEx(RL_V2(end_x, end_y),
+                         RL_V2(end_x + arrow_size, end_y - arrow_size * 0.5), 2.0, color)
+            rl.DrawLineEx(RL_V2(end_x, end_y),
+                         RL_V2(end_x - arrow_size * 0.3, end_y - arrow_size), 2.0, color)
+
+    def _draw_flip_icon(self, cx: int, cy: int, r: float, color) -> None:
+        """Draw horizontal flip icon."""
+        # Two triangles pointing at each other with a line in middle
+        arrow_w = r * 0.6
+        arrow_h = r * 0.8
+        gap = r * 0.15
+
+        # Left arrow
+        rl.DrawLineEx(RL_V2(cx - gap - arrow_w, cy),
+                     RL_V2(cx - gap, cy - arrow_h), 2.0, color)
+        rl.DrawLineEx(RL_V2(cx - gap - arrow_w, cy),
+                     RL_V2(cx - gap, cy + arrow_h), 2.0, color)
+        rl.DrawLineEx(RL_V2(cx - gap, cy - arrow_h),
+                     RL_V2(cx - gap, cy + arrow_h), 2.0, color)
+
+        # Right arrow
+        rl.DrawLineEx(RL_V2(cx + gap + arrow_w, cy),
+                     RL_V2(cx + gap, cy - arrow_h), 2.0, color)
+        rl.DrawLineEx(RL_V2(cx + gap + arrow_w, cy),
+                     RL_V2(cx + gap, cy + arrow_h), 2.0, color)
+        rl.DrawLineEx(RL_V2(cx + gap, cy - arrow_h),
+                     RL_V2(cx + gap, cy + arrow_h), 2.0, color)
+
+    # ═══════════════════════════════════════════════════════════════════════
+    # Context Menu
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def draw_context_menu(self, state: "AppState") -> None:
+        """Draw right-click context menu."""
+        menu = state.ui.context_menu
+        if not menu.visible:
+            return
+
+        n_items = len(menu.items)
+        if n_items == 0:
+            return
+
+        # Calculate menu dimensions
+        menu_w = MENU_ITEM_WIDTH
+        menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
+
+        # Clamp position to screen
+        x = min(menu.x, state.screenW - menu_w - 5)
+        y = min(menu.y, state.screenH - menu_h - 5)
+        x = max(5, x)
+        y = max(5, y)
+
+        # Background with shadow
+        shadow_off = 4
+        rl.DrawRectangle(x + shadow_off, y + shadow_off, menu_w, menu_h,
+                        RL_Color(0, 0, 0, 100))
+        rl.DrawRectangle(x, y, menu_w, menu_h,
+                        RL_Color(40, 40, 40, int(255 * MENU_BG_ALPHA)))
+        rl.DrawRectangleLines(x, y, menu_w, menu_h,
+                             RL_Color(80, 80, 80, 255))
+
+        # Draw items
+        item_y = y + MENU_PADDING
+        for i, item in enumerate(menu.items):
+            is_hover = (i == menu.hover_index)
+
+            # Hover highlight
+            if is_hover:
+                rl.DrawRectangle(x + 2, item_y, menu_w - 4, MENU_ITEM_HEIGHT,
+                               RL_Color(255, 255, 255, int(255 * MENU_HOVER_ALPHA)))
+
+            # Item text
+            text_color = RL_Color(255, 255, 255, 255) if is_hover else RL_Color(200, 200, 200, 255)
+            text_x = x + MENU_PADDING + 8
+            text_y = item_y + (MENU_ITEM_HEIGHT - 16) // 2
+            RL_DrawText(item.label, text_x, text_y, 16, text_color)
+
+            item_y += MENU_ITEM_HEIGHT
+
+    # ═══════════════════════════════════════════════════════════════════════
     # Convenience methods
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -499,8 +664,11 @@ class Renderer:
         self.draw_close_button(state)
         self.draw_filename(state)
         self.draw_gallery(state)
+        self.draw_toolbar(state)
         self.draw_loading_indicator(state)
         self.draw_hud(state)
+        # Context menu always on top
+        self.draw_context_menu(state)
 
     def draw_frame(self, state: "AppState") -> None:
         """Complete frame: begin, draw all, end."""

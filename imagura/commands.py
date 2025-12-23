@@ -292,6 +292,127 @@ class GalleryClick(Command):
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# Image Transformation Commands
+# ═══════════════════════════════════════════════════════════════════════════
+
+class RotateClockwise(Command):
+    """Rotate current image 90 degrees clockwise."""
+
+    def can_execute(self, state: "AppState") -> bool:
+        return state.cache.curr is not None
+
+    def execute(self, state: "AppState") -> bool:
+        if not self.can_execute(state):
+            return False
+        log(f"[CMD] RotateClockwise")
+        return True
+
+
+class RotateCounterClockwise(Command):
+    """Rotate current image 90 degrees counter-clockwise."""
+
+    def can_execute(self, state: "AppState") -> bool:
+        return state.cache.curr is not None
+
+    def execute(self, state: "AppState") -> bool:
+        if not self.can_execute(state):
+            return False
+        log(f"[CMD] RotateCounterClockwise")
+        return True
+
+
+class FlipHorizontal(Command):
+    """Flip current image horizontally."""
+
+    def can_execute(self, state: "AppState") -> bool:
+        return state.cache.curr is not None
+
+    def execute(self, state: "AppState") -> bool:
+        if not self.can_execute(state):
+            return False
+        log(f"[CMD] FlipHorizontal")
+        return True
+
+
+class CopyToClipboard(Command):
+    """Copy current image to clipboard."""
+
+    def can_execute(self, state: "AppState") -> bool:
+        return (state.cache.curr is not None and
+                state.index < len(state.current_dir_images))
+
+    def execute(self, state: "AppState") -> bool:
+        if not self.can_execute(state):
+            return False
+        log(f"[CMD] CopyToClipboard")
+        return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Context Menu Commands
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ShowContextMenu(Command):
+    """Show context menu at position."""
+    x: int
+    y: int
+
+    def execute(self, state: "AppState") -> bool:
+        state.ui.context_menu.show(self.x, self.y)
+        log(f"[CMD] ShowContextMenu at ({self.x}, {self.y})")
+        return True
+
+
+class HideContextMenu(Command):
+    """Hide context menu."""
+
+    def execute(self, state: "AppState") -> bool:
+        state.ui.context_menu.hide()
+        log(f"[CMD] HideContextMenu")
+        return True
+
+
+@dataclass
+class ContextMenuClick(Command):
+    """Click on context menu item."""
+    item_index: int
+
+    def can_execute(self, state: "AppState") -> bool:
+        menu = state.ui.context_menu
+        return menu.visible and 0 <= self.item_index < len(menu.items)
+
+    def execute(self, state: "AppState") -> bool:
+        if not self.can_execute(state):
+            return False
+        item = state.ui.context_menu.items[self.item_index]
+        log(f"[CMD] ContextMenuClick: {item.label}")
+        state.ui.context_menu.hide()
+        return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Toolbar Commands
+# ═══════════════════════════════════════════════════════════════════════════
+
+@dataclass
+class ToolbarButtonClick(Command):
+    """Click on toolbar button."""
+    button_index: int
+
+    def can_execute(self, state: "AppState") -> bool:
+        toolbar = state.ui.toolbar
+        return 0 <= self.button_index < len(toolbar.buttons)
+
+    def execute(self, state: "AppState") -> bool:
+        if not self.can_execute(state):
+            return False
+        button = state.ui.toolbar.buttons[self.button_index]
+        log(f"[CMD] ToolbarButtonClick: {button.tooltip}")
+        return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # App Control Commands
 # ═══════════════════════════════════════════════════════════════════════════
 
