@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from dataclasses import dataclass, field
+from typing import Tuple
 
 from ..types import ViewParams
 
@@ -20,7 +21,7 @@ class ViewState:
         return self.view.scale
 
     @property
-    def offset(self) -> tuple[float, float]:
+    def offset(self) -> Tuple[float, float]:
         """Current view offset."""
         return (self.view.offx, self.view.offy)
 

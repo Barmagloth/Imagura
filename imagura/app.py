@@ -27,6 +27,7 @@ from .rl_compat import rl
 from .config import TARGET_FPS, ANIM_SWITCH_KEYS_MS
 from .logging import log, now, increment_frame, get_frame
 from .types import ViewParams
+from .view_math import recompute_view_anchor_zoom as anchor_zoom, clamp_pan
 
 
 @dataclass
@@ -139,10 +140,6 @@ class Application:
 
         if isinstance(cmd, (ZoomIn, ZoomOut)):
             if cmd.can_execute(self.state) and self.on_start_zoom_animation:
-                # Calculate new view and start animation
-                from .view_math import recompute_view_anchor_zoom as anchor_zoom
-                from .view_math import clamp_pan
-
                 ti = self.state.cache.curr
                 if ti:
                     step = cmd.step if isinstance(cmd, ZoomIn) else -cmd.step
@@ -161,9 +158,6 @@ class Application:
 
         if isinstance(cmd, WheelZoom):
             if cmd.can_execute(self.state) and self.on_start_zoom_animation:
-                from .view_math import recompute_view_anchor_zoom as anchor_zoom
-                from .view_math import clamp_pan
-
                 ti = self.state.cache.curr
                 if ti:
                     new_scale = self.state.view.scale * (1.0 + cmd.delta * cmd.step_multiplier)
@@ -191,8 +185,6 @@ class Application:
 
         if isinstance(cmd, UpdatePan):
             if cmd.can_execute(self.state):
-                # Update view based on pan
-                from .view_math import clamp_pan
                 ti = self.state.cache.curr
                 if ti:
                     new_offx, new_offy = self.state.input.get_panned_offset(
@@ -223,7 +215,6 @@ class Application:
             return
 
         if isinstance(cmd, GalleryScroll):
-            from .logging import now
             cmd.execute(self.state)
             self.state.gallery_last_wheel_time = now()
             return

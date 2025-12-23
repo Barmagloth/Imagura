@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .state import AppState
 
 from .rl_compat import (
-    rl, RL_WHITE,
+    rl, RL_WHITE, RL_VERSION,
     make_rect as RL_Rect, make_vec2 as RL_V2, make_color as RL_Color,
     draw_text as RL_DrawText,
 )
@@ -26,6 +26,7 @@ from .config import (
     NAV_BTN_RADIUS, NAV_BTN_BG_ALPHA_MAX,
     GALLERY_HEIGHT_FRAC, GALLERY_THUMB_SPACING,
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA,
+    ANIM_OPEN_MS, FIT_OPEN_SCALE, OPEN_ALPHA_START,
 )
 from .logging import now
 
@@ -115,8 +116,6 @@ class Renderer:
 
     def _draw_open_animation(self, state: "AppState", ti: TextureInfo) -> None:
         """Draw open animation frame."""
-        from .config import ANIM_OPEN_MS, FIT_OPEN_SCALE, OPEN_ALPHA_START
-
         if state.open_anim_t0 == 0.0:
             return
 
@@ -325,8 +324,6 @@ class Renderer:
         """Draw debug HUD."""
         if not state.show_hud:
             return
-
-        from .rl_compat import RL_VERSION
 
         hud_y = state.screenH - 180
         line_spacing = 24

@@ -5,8 +5,6 @@ from dataclasses import dataclass, field
 from typing import Tuple, Optional, Callable, Any
 from enum import IntEnum
 
-from .logging import now
-
 
 class LoadPriority(IntEnum):
     """Priority levels for async image loading."""
