@@ -58,6 +58,7 @@ class ContextMenuState:
 
 class ToolbarButtonId(IntEnum):
     """Identifiers for toolbar buttons."""
+    SETTINGS = 0       # Settings (gear icon)
     ROTATE_CW = 1      # Rotate clockwise
     ROTATE_CCW = 2     # Rotate counter-clockwise
     FLIP_H = 3         # Flip horizontal
@@ -68,10 +69,12 @@ class ToolbarButton:
     """A toolbar button."""
     id: ToolbarButtonId
     tooltip: str
+    separator_after: bool = False  # Draw separator after this button
 
 
-# Default toolbar buttons
+# Default toolbar buttons (settings first with separator, then image tools)
 DEFAULT_TOOLBAR_BUTTONS: List[ToolbarButton] = [
+    ToolbarButton(ToolbarButtonId.SETTINGS, "Настройки", separator_after=True),
     ToolbarButton(ToolbarButtonId.ROTATE_CCW, "Повернуть влево"),
     ToolbarButton(ToolbarButtonId.ROTATE_CW, "Повернуть вправо"),
     ToolbarButton(ToolbarButtonId.FLIP_H, "Отразить"),
@@ -94,6 +97,28 @@ class ToolbarState:
 
 
 @dataclass
+class SettingsState:
+    """State for settings window."""
+    visible: bool = False
+    scroll_offset: int = 0
+    hover_item: int = -1
+    editing_item: int = -1
+    edit_value: str = ""
+
+    def show(self) -> None:
+        """Show settings window."""
+        self.visible = True
+        self.scroll_offset = 0
+        self.hover_item = -1
+        self.editing_item = -1
+
+    def hide(self) -> None:
+        """Hide settings window."""
+        self.visible = False
+        self.editing_item = -1
+
+
+@dataclass
 class UIState:
     """State for UI elements."""
     show_hud: bool = False
@@ -105,9 +130,10 @@ class UIState:
     bg_current_opacity: float = BG_MODES[0]["opacity"]
     bg_target_opacity: float = BG_MODES[0]["opacity"]
 
-    # Toolbar and context menu
+    # Toolbar, context menu, settings
     toolbar: ToolbarState = field(default_factory=ToolbarState)
     context_menu: ContextMenuState = field(default_factory=ContextMenuState)
+    settings: SettingsState = field(default_factory=SettingsState)
 
     @property
     def current_bg_mode(self) -> dict:

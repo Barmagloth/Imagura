@@ -66,23 +66,57 @@ def get_work_area() -> Tuple[int, int, int, int]:
 class WinBlur:
     """Windows blur effect manager using DWM API."""
 
+    # DWM Window Attributes
+    DWMWA_NCRENDERING_POLICY = 2
+    DWMWA_USE_IMMERSIVE_DARK_MODE = 20
     DWMWA_SYSTEMBACKDROP_TYPE = 38
-    DWMSBT_MAINWINDOW = 2
-    DWMSBT_TRANSIENTWINDOW = 3
+    DWMWA_MICA_EFFECT = 1029  # Undocumented, for older Win11 builds
+
+    # System backdrop types (Windows 11 22H2+)
+    DWMSBT_AUTO = 0
+    DWMSBT_NONE = 1
+    DWMSBT_MAINWINDOW = 2      # Mica
+    DWMSBT_TRANSIENTWINDOW = 3  # Acrylic
+    DWMSBT_TABBEDWINDOW = 4    # Tabbed Mica
 
     @staticmethod
-    def _try_set_system_backdrop(hwnd: int, kind: int) -> bool:
-        """Try to set Windows 11 style backdrop."""
+    def _set_window_attribute(hwnd: int, attr: int, value: int) -> bool:
+        """Set a DWM window attribute."""
         if sys.platform != 'win32':
             return False
         try:
             dwmapi = ctypes.windll.dwmapi
-            value = ctypes.c_int(kind)
+            val = ctypes.c_int(value)
             res = dwmapi.DwmSetWindowAttribute(
                 ctypes.c_void_p(hwnd),
-                ctypes.c_uint(WinBlur.DWMWA_SYSTEMBACKDROP_TYPE),
-                ctypes.byref(value),
-                ctypes.sizeof(value)
+                ctypes.c_uint(attr),
+                ctypes.byref(val),
+                ctypes.sizeof(val)
+            )
+            return res == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _extend_frame_into_client(hwnd: int) -> bool:
+        """Extend window frame into client area (needed for some effects)."""
+        if sys.platform != 'win32':
+            return False
+        try:
+            dwmapi = ctypes.windll.dwmapi
+
+            class MARGINS(ctypes.Structure):
+                _fields_ = [
+                    ("cxLeftWidth", ctypes.c_int),
+                    ("cxRightWidth", ctypes.c_int),
+                    ("cyTopHeight", ctypes.c_int),
+                    ("cyBottomHeight", ctypes.c_int),
+                ]
+
+            margins = MARGINS(-1, -1, -1, -1)  # Extend to entire window
+            res = dwmapi.DwmExtendFrameIntoClientArea(
+                ctypes.c_void_p(hwnd),
+                ctypes.byref(margins)
             )
             return res == 0
         except Exception:
@@ -90,7 +124,7 @@ class WinBlur:
 
     @staticmethod
     def _set_legacy_blur(hwnd: int, enabled: bool) -> bool:
-        """Set Windows 10 style blur behind."""
+        """Set Windows 10 style blur behind using SetWindowCompositionAttribute."""
         if sys.platform != 'win32':
             return False
         try:
@@ -112,39 +146,67 @@ class WinBlur:
                 ]
 
             WCA_ACCENT_POLICY = 19
-            ACCENT_ENABLE_BLURBEHIND = 3
+            # Accent states
             ACCENT_DISABLED = 0
+            ACCENT_ENABLE_BLURBEHIND = 3
+            ACCENT_ENABLE_ACRYLICBLURBEHIND = 4  # Windows 10 1803+
 
             accent = ACCENT_POLICY()
-            accent.AccentState = ACCENT_ENABLE_BLURBEHIND if enabled else ACCENT_DISABLED
-            accent.AccentFlags = 2
-            accent.GradientColor = 0
+            if enabled:
+                # Try acrylic first (better effect), fall back to blur
+                accent.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND
+                accent.AccentFlags = 2
+                # Semi-transparent background color (ABGR format)
+                accent.GradientColor = 0x80000000  # 50% black
+            else:
+                accent.AccentState = ACCENT_DISABLED
+                accent.AccentFlags = 0
+                accent.GradientColor = 0
 
             data = WINDOWCOMPOSITIONATTRIBDATA()
             data.Attribute = WCA_ACCENT_POLICY
             data.Data = ctypes.addressof(accent)
             data.SizeOfData = ctypes.sizeof(accent)
 
-            user32.SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
-            return True
+            # Get function (may not exist on older Windows)
+            SetWindowCompositionAttribute = getattr(user32, 'SetWindowCompositionAttribute', None)
+            if SetWindowCompositionAttribute:
+                SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
+                return True
+            return False
         except Exception:
             return False
 
     @classmethod
     def enable(cls, hwnd: Optional[int]) -> None:
-        """Enable blur effect on window."""
+        """Enable blur/transparency effect on window."""
         if not hwnd:
             return
-        # Try Windows 11 style first, fallback to Windows 10
-        if not cls._try_set_system_backdrop(hwnd, cls.DWMSBT_MAINWINDOW):
-            cls._try_set_system_backdrop(hwnd, cls.DWMSBT_TRANSIENTWINDOW)
-            cls._set_legacy_blur(hwnd, True)
+
+        # First, extend frame into client area
+        cls._extend_frame_into_client(hwnd)
+
+        # Try Windows 11 22H2+ Acrylic (most compatible for transparent effect)
+        if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW):
+            return
+
+        # Try Windows 11 Mica
+        if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_MAINWINDOW):
+            return
+
+        # Try undocumented Mica effect (older Win11 builds)
+        if cls._set_window_attribute(hwnd, cls.DWMWA_MICA_EFFECT, 1):
+            return
+
+        # Fallback to Windows 10 style blur/acrylic
+        cls._set_legacy_blur(hwnd, True)
 
     @classmethod
     def disable(cls, hwnd: Optional[int]) -> None:
         """Disable blur effect on window."""
         if not hwnd:
             return
+        cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)
         cls._set_legacy_blur(hwnd, False)
 
 
