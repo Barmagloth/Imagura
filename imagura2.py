@@ -1132,21 +1132,193 @@ def draw_context_menu(state: AppState):
 
 
 # Settings window configuration items
+# Format: (display_label, config_key, value_type, min_val, max_val)
 SETTINGS_ITEMS = [
-    ("Performance", None),  # Section header
-    ("TARGET_FPS", "TARGET_FPS", int),
-    ("ASYNC_WORKERS", "ASYNC_WORKERS", int),
-    ("Animation", None),  # Section header
-    ("ANIM_SWITCH_KEYS_MS", "ANIM_SWITCH_KEYS_MS", int),
-    ("ANIM_OPEN_MS", "ANIM_OPEN_MS", int),
-    ("ANIM_ZOOM_MS", "ANIM_ZOOM_MS", int),
-    ("GALLERY_SLIDE_MS", "GALLERY_SLIDE_MS", int),
-    ("Zoom", None),  # Section header
-    ("ZOOM_STEP_KEYS", "ZOOM_STEP_KEYS", float),
-    ("ZOOM_STEP_WHEEL", "ZOOM_STEP_WHEEL", float),
-    ("Font", None),  # Section header
-    ("FONT_SIZE", "FONT_SIZE", int),
+    ("Performance", None, None, None, None),  # Section header
+    ("TARGET_FPS", "TARGET_FPS", int, 30, 240),
+    ("ASYNC_WORKERS", "ASYNC_WORKERS", int, 1, 32),
+    ("Animation (ms)", None, None, None, None),  # Section header
+    ("ANIM_SWITCH_KEYS_MS", "ANIM_SWITCH_KEYS_MS", int, 0, 2000),
+    ("ANIM_OPEN_MS", "ANIM_OPEN_MS", int, 0, 2000),
+    ("ANIM_ZOOM_MS", "ANIM_ZOOM_MS", int, 0, 500),
+    ("GALLERY_SLIDE_MS", "GALLERY_SLIDE_MS", int, 0, 500),
+    ("Zoom", None, None, None, None),  # Section header
+    ("ZOOM_STEP_KEYS", "ZOOM_STEP_KEYS", float, 0.001, 0.1),
+    ("ZOOM_STEP_WHEEL", "ZOOM_STEP_WHEEL", float, 0.01, 0.5),
+    ("Font", None, None, None, None),  # Section header
+    ("FONT_SIZE", "FONT_SIZE", int, 12, 48),
 ]
+
+
+def get_settings_item_index(item_idx: int) -> int:
+    """Convert visual item index to editable item index (skip headers)."""
+    editable_idx = 0
+    for i, item in enumerate(SETTINGS_ITEMS):
+        if item[1] is not None:  # Not a header
+            if i == item_idx:
+                return editable_idx
+            editable_idx += 1
+    return -1
+
+
+def save_config_value(config_key: str, value, val_type: type) -> bool:
+    """Save a single config value to config.py file."""
+    import imagura.config as cfg
+    config_path = os.path.join(os.path.dirname(__file__), "imagura", "config.py")
+
+    try:
+        # Read current file
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Find and replace the value
+        import re
+        if val_type == float:
+            pattern = rf'^({config_key}\s*=\s*)[\d.]+(.*)$'
+            replacement = rf'\g<1>{value}\2'
+        else:
+            pattern = rf'^({config_key}\s*=\s*)\d+(.*)$'
+            replacement = rf'\g<1>{int(value)}\2'
+
+        new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
+
+        if count == 0:
+            log(f"[SETTINGS][ERR] Could not find {config_key} in config.py")
+            return False
+
+        # Write back
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        # Update runtime value
+        setattr(cfg, config_key, val_type(value))
+        log(f"[SETTINGS] Saved {config_key} = {value}")
+        return True
+
+    except Exception as e:
+        log(f"[SETTINGS][ERR] Failed to save config: {e!r}")
+        return False
+
+
+def validate_settings_value(value_str: str, val_type: type, min_val, max_val) -> tuple:
+    """Validate a settings value. Returns (is_valid, parsed_value, error_msg)."""
+    if not value_str.strip():
+        return False, None, "Empty value"
+
+    try:
+        if val_type == int:
+            val = int(value_str)
+        elif val_type == float:
+            val = float(value_str)
+        else:
+            return False, None, "Unknown type"
+
+        if min_val is not None and val < min_val:
+            return False, None, f"Min: {min_val}"
+        if max_val is not None and val > max_val:
+            return False, None, f"Max: {max_val}"
+
+        return True, val, None
+
+    except ValueError:
+        return False, None, "Invalid number"
+
+
+def handle_settings_input(state: AppState) -> bool:
+    """Handle input for settings window. Returns True if input was consumed."""
+    settings = state.ui.settings
+    if not settings.visible:
+        return False
+
+    mouse = rl.GetMousePosition()
+
+    # Window dimensions (must match draw_settings_window)
+    win_w = 400
+    win_h = 500
+    win_x = (state.screenW - win_w) // 2
+    win_y = (state.screenH - win_h) // 2
+
+    # Check close button click
+    close_x = win_x + win_w - 35
+    close_y = win_y + 5
+    if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+        if close_x <= mouse.x <= close_x + 30 and close_y <= mouse.y <= close_y + 30:
+            settings.hide()
+            return True
+
+    # Handle editing mode
+    if settings.editing_item >= 0:
+        # Get key input
+        key = rl.GetCharPressed()
+        while key > 0:
+            # Allow digits, decimal point, minus
+            if (48 <= key <= 57) or key == 46 or key == 45:  # 0-9, '.', '-'
+                settings.edit_value += chr(key)
+            key = rl.GetCharPressed()
+
+        # Backspace
+        if rl.IsKeyPressed(rl.KEY_BACKSPACE) and len(settings.edit_value) > 0:
+            settings.edit_value = settings.edit_value[:-1]
+
+        # Enter - save value
+        if rl.IsKeyPressed(rl.KEY_ENTER):
+            # Find the item being edited
+            editable_idx = 0
+            for item in SETTINGS_ITEMS:
+                if item[1] is not None:  # Not a header
+                    if editable_idx == settings.editing_item:
+                        label, config_key, val_type, min_val, max_val = item
+                        is_valid, parsed_val, error = validate_settings_value(
+                            settings.edit_value, val_type, min_val, max_val
+                        )
+                        if is_valid:
+                            save_config_value(config_key, parsed_val, val_type)
+                            settings.editing_item = -1
+                            settings.edit_value = ""
+                        else:
+                            log(f"[SETTINGS] Validation failed: {error}")
+                        break
+                    editable_idx += 1
+            return True
+
+        # Escape - cancel editing
+        if rl.IsKeyPressed(rl.KEY_ESCAPE):
+            settings.editing_item = -1
+            settings.edit_value = ""
+            return True
+
+        return True  # Consume all input while editing
+
+    # ESC closes settings when not editing
+    if rl.IsKeyPressed(rl.KEY_ESCAPE):
+        settings.hide()
+        return True
+
+    # Handle item click to start editing
+    if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+        item_y = win_y + 50
+        item_h = 28
+        val_x = win_x + win_w - 110
+        val_w = 100
+
+        editable_idx = 0
+        for item in SETTINGS_ITEMS:
+            label, config_key, val_type, min_val, max_val = item if len(item) == 5 else (item[0], item[1], None, None, None)
+
+            if config_key is not None:  # Editable item
+                # Check if click is in value area
+                if (val_x <= mouse.x <= val_x + val_w and
+                    item_y <= mouse.y <= item_y + item_h):
+                    import imagura.config as cfg
+                    current_val = getattr(cfg, config_key, 0)
+                    settings.editing_item = editable_idx
+                    settings.edit_value = str(current_val)
+                    return True
+                editable_idx += 1
+
+            item_y += item_h
+
+    return False
 
 
 def draw_settings_window(state: AppState):
@@ -1182,9 +1354,14 @@ def draw_settings_window(state: AppState):
     item_y = win_y + 50
     item_h = 28
     padding_x = 20
+    val_x = win_x + win_w - 110
+    val_w = 90
 
-    for i, item in enumerate(SETTINGS_ITEMS):
-        label, config_key, val_type = item if len(item) == 3 else (item[0], item[1], None)
+    import imagura.config as cfg
+    editable_idx = 0
+
+    for item in SETTINGS_ITEMS:
+        label, config_key, val_type, min_val, max_val = item if len(item) == 5 else (item[0], item[1], None, None, None)
 
         if config_key is None:
             # Section header
@@ -1192,22 +1369,41 @@ def draw_settings_window(state: AppState):
             RL_DrawText(label, win_x + padding_x, item_y + 6, 16, RL_Color(180, 180, 180, 255))
         else:
             # Config item
-            # Get current value from imagura.config module
-            import imagura.config as cfg
             current_val = getattr(cfg, config_key, "?")
 
             # Draw label
             RL_DrawText(f"  {label}:", win_x + padding_x, item_y + 6, 14, RL_Color(200, 200, 200, 255))
 
-            # Draw value
-            val_x = win_x + win_w - 100
-            val_str = str(current_val)
-            RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
+            # Check if this item is being edited
+            is_editing = (settings.editing_item == editable_idx)
+
+            # Draw value background (edit field)
+            if is_editing:
+                rl.DrawRectangle(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(60, 60, 80, 255))
+                rl.DrawRectangleLines(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(100, 150, 255, 255))
+                # Draw edit value with cursor
+                display_val = settings.edit_value
+                cursor = "|" if (int(now() * 2) % 2 == 0) else ""
+                RL_DrawText(display_val + cursor, val_x, item_y + 6, 14, RL_Color(255, 255, 255, 255))
+            else:
+                # Hover highlight
+                mouse = rl.GetMousePosition()
+                if (val_x - 5 <= mouse.x <= val_x + val_w + 5 and
+                    item_y <= mouse.y <= item_y + item_h):
+                    rl.DrawRectangle(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(50, 50, 60, 255))
+
+                val_str = str(current_val)
+                RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
+
+            editable_idx += 1
 
         item_y += item_h
 
     # Footer hint
-    hint = "Press ESC to close"
+    if settings.editing_item >= 0:
+        hint = "Enter: Save | Esc: Cancel"
+    else:
+        hint = "Click value to edit | Esc: Close"
     RL_DrawText(hint, win_x + 20, win_y + win_h - 25, 12, RL_Color(120, 120, 120, 255))
 
 
@@ -2069,6 +2265,10 @@ def main():
             if should_close:
                 break
 
+            # Handle settings window input first (blocks other input when visible)
+            if state.ui.settings.visible:
+                handle_settings_input(state)
+
             rl.BeginDrawing()
             apply_bg_mode(state)
 
@@ -2335,11 +2535,9 @@ def main():
             rl.EndDrawing()
             increment_frame()
 
-            # Handle settings window close
+            # Skip other key handling when settings is open
             if state.ui.settings.visible:
-                if rl.IsKeyPressed(KEY_CLOSE):
-                    state.ui.settings.hide()
-                    continue
+                continue
 
             if rl.IsKeyPressed(KEY_CLOSE):
                 break
