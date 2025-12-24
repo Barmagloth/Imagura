@@ -1365,7 +1365,7 @@ def draw_settings_window(state: AppState):
     # Close button (X)
     close_x = win_x + win_w - 30
     close_y = win_y + 10
-    rl.DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
+    RL_DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
 
     # Settings items
     item_y = win_y + 50
