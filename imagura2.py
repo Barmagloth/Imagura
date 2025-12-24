@@ -157,19 +157,28 @@ def load_unicode_font(font_size: int = 24):
         "C:\\Windows\\Fonts\\tahoma.ttf",
     ]
 
+    # Build character set: ASCII + Cyrillic
+    # ASCII: 32-126, Cyrillic: 0x400-0x4FF (1024-1279)
+    codepoints = list(range(32, 127)) + list(range(0x400, 0x500))
+
     for font_path in font_paths:
         if os.path.exists(font_path):
             try:
                 if hasattr(rl, 'ffi'):
-                    font = rl.LoadFontEx(font_path.encode('utf-8'), font_size, rl.ffi.NULL, 0)
+                    # cffi version
+                    cp_array = rl.ffi.new(f'int[{len(codepoints)}]', codepoints)
+                    font = rl.LoadFontEx(font_path.encode('utf-8'), font_size, cp_array, len(codepoints))
                 else:
+                    # ctypes version
+                    import ctypes
+                    cp_array = (ctypes.c_int * len(codepoints))(*codepoints)
                     try:
-                        font = rl.LoadFontEx(font_path, font_size, None, 0)
-                    except:
-                        font = rl.LoadFontEx(font_path.encode('utf-8'), font_size, None, 0)
+                        font = rl.LoadFontEx(font_path, font_size, cp_array, len(codepoints))
+                    except TypeError:
+                        font = rl.LoadFontEx(font_path.encode('utf-8'), font_size, cp_array, len(codepoints))
 
                 if hasattr(font, 'texture') and hasattr(font.texture, 'id') and font.texture.id > 0:
-                    log(f"[FONT] Loaded unicode font: {os.path.basename(font_path)}")
+                    log(f"[FONT] Loaded unicode font with Cyrillic: {os.path.basename(font_path)}")
                     return font
             except Exception as e:
                 log(f"[FONT][ERR] Failed to load {font_path}: {e!r}")
@@ -738,9 +747,23 @@ def update_toolbar_alpha(state: AppState):
         toolbar.alpha = toolbar.target_alpha
 
 
-def is_in_toolbar_zone(state: AppState, mouse_y: float) -> bool:
-    """Check if mouse is in toolbar trigger zone."""
-    return mouse_y < state.screenH * TOOLBAR_TRIGGER_FRAC
+def get_toolbar_panel_bounds(state: AppState) -> tuple:
+    """Get toolbar panel bounds (x, width)."""
+    sw = state.screenW
+    n_buttons = len(state.ui.toolbar.buttons)
+    buttons_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+    min_panel_width = buttons_width + TOOLBAR_BTN_RADIUS * 2 * 2
+    panel_width = max(min_panel_width, int(sw * 0.6))
+    panel_x = (sw - panel_width) // 2
+    return (panel_x, panel_width)
+
+
+def is_in_toolbar_zone(state: AppState, mouse_x: float, mouse_y: float) -> bool:
+    """Check if mouse is in toolbar trigger zone (within panel bounds)."""
+    if mouse_y >= state.screenH * TOOLBAR_TRIGGER_FRAC:
+        return False
+    panel_x, panel_width = get_toolbar_panel_bounds(state)
+    return panel_x <= mouse_x <= panel_x + panel_width
 
 
 def get_toolbar_button_at(state: AppState, mx: float, my: float) -> int:
@@ -988,6 +1011,136 @@ def draw_context_menu(state: AppState):
             RL_DrawText(item.label, text_x, text_y, font_size, text_color)
 
         item_y += MENU_ITEM_HEIGHT
+
+
+def delete_to_recycle_bin(file_path: str) -> bool:
+    """
+    Delete a file to the Windows recycle bin.
+
+    Uses SHFileOperationW from shell32.dll.
+    Returns True if successful, False otherwise.
+    """
+    if sys.platform != 'win32':
+        log(f"[DELETE] Recycle bin not supported on {sys.platform}")
+        return False
+
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # SHFILEOPSTRUCTW structure
+        class SHFILEOPSTRUCTW(ctypes.Structure):
+            _fields_ = [
+                ("hwnd", wintypes.HWND),
+                ("wFunc", wintypes.UINT),
+                ("pFrom", wintypes.LPCWSTR),
+                ("pTo", wintypes.LPCWSTR),
+                ("fFlags", wintypes.WORD),
+                ("fAnyOperationsAborted", wintypes.BOOL),
+                ("hNameMappings", ctypes.c_void_p),
+                ("lpszProgressTitle", wintypes.LPCWSTR),
+            ]
+
+        # Constants
+        FO_DELETE = 3
+        FOF_ALLOWUNDO = 0x0040  # Send to recycle bin
+        FOF_NOCONFIRMATION = 0x0010  # No confirmation dialog
+        FOF_SILENT = 0x0004  # No progress dialog
+
+        shell32 = ctypes.windll.shell32
+
+        # Path must be double-null terminated
+        path_double_null = file_path + '\0\0'
+
+        file_op = SHFILEOPSTRUCTW()
+        file_op.hwnd = None
+        file_op.wFunc = FO_DELETE
+        file_op.pFrom = path_double_null
+        file_op.pTo = None
+        file_op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
+        file_op.fAnyOperationsAborted = False
+        file_op.hNameMappings = None
+        file_op.lpszProgressTitle = None
+
+        result = shell32.SHFileOperationW(ctypes.byref(file_op))
+
+        if result == 0 and not file_op.fAnyOperationsAborted:
+            log(f"[DELETE] Sent to recycle bin: {os.path.basename(file_path)}")
+            return True
+        else:
+            log(f"[DELETE][ERR] SHFileOperationW failed: {result}")
+            return False
+
+    except Exception as e:
+        log(f"[DELETE][ERR] Failed to delete: {e!r}")
+        return False
+
+
+def delete_current_image(state: AppState) -> bool:
+    """
+    Delete the current image to recycle bin and navigate to next/prev.
+    Returns True if successful.
+    """
+    if state.index >= len(state.current_dir_images):
+        return False
+
+    if len(state.current_dir_images) == 0:
+        return False
+
+    path = state.current_dir_images[state.index]
+    old_index = state.index
+
+    # First delete the file
+    if not delete_to_recycle_bin(path):
+        return False
+
+    # Unload all cached textures (curr, prev, next) since indices shift
+    for ti in (state.cache.curr, state.cache.prev, state.cache.next):
+        if ti:
+            try:
+                if getattr(ti.tex, 'id', 0):
+                    state.to_unload.append(ti.tex)
+            except Exception:
+                pass
+    state.cache.curr = None
+    state.cache.prev = None
+    state.cache.next = None
+
+    # Remove from thumbnail cache
+    if path in state.thumb_cache:
+        bt = state.thumb_cache.pop(path)
+        if bt.texture:
+            try:
+                rl.UnloadTexture(bt.texture)
+            except Exception:
+                pass
+
+    # Remove from image list
+    state.current_dir_images.pop(old_index)
+
+    # Adjust index
+    n = len(state.current_dir_images)
+    if n == 0:
+        # No more images - will exit
+        log("[DELETE] No more images in directory")
+        return True
+
+    # Stay at same position or go to last if at end
+    if old_index >= n:
+        state.index = n - 1
+    else:
+        state.index = old_index
+
+    # Load new current image
+    preload_neighbors(state, state.index, skip_neighbors=False)
+
+    # Update gallery center
+    state.gallery_target_center = float(state.index)
+    state.gallery_center_index = float(state.index)
+    schedule_thumbs(state, state.index)
+
+    log(f"[DELETE] Now showing index {state.index} of {n}")
+    return True
 
 
 def reload_current_image(state: AppState):
@@ -1764,7 +1917,7 @@ def main():
             toolbar = state.ui.toolbar
 
             # Update toolbar visibility based on mouse position
-            if is_in_toolbar_zone(state, mouse.y):
+            if is_in_toolbar_zone(state, mouse.x, mouse.y):
                 toolbar.target_alpha = 1.0
             else:
                 toolbar.target_alpha = 0.0
@@ -1813,6 +1966,16 @@ def main():
             if rl.IsKeyPressed(rl.KEY_V):
                 state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
                 state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
+
+            # DEL key - delete image to recycle bin
+            if rl.IsKeyPressed(rl.KEY_DELETE) and not state.open_anim_active:
+                if delete_current_image(state):
+                    if len(state.current_dir_images) == 0:
+                        # No more images - close app
+                        break
+                    rl.EndDrawing()
+                    increment_frame()
+                    continue
 
             if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 if rl.IsKeyDown(rl.KEY_UP):
