@@ -33,7 +33,7 @@ from imagura.config import (
     MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING, MENU_BG_ALPHA, MENU_HOVER_ALPHA,
     FONT_SIZE, FONT_ANTIALIAS,
     KEY_TOGGLE_HUD, KEY_TOGGLE_FILENAME, KEY_CYCLE_BG, KEY_DELETE_IMAGE,
-    KEY_ZOOM_IN, KEY_ZOOM_OUT, KEY_TOGGLE_ZOOM,
+    KEY_ZOOM_IN, KEY_ZOOM_IN_ALT, KEY_ZOOM_OUT, KEY_ZOOM_OUT_ALT, KEY_TOGGLE_ZOOM,
     KEY_NEXT_IMAGE, KEY_NEXT_IMAGE_ALT, KEY_PREV_IMAGE, KEY_PREV_IMAGE_ALT, KEY_CLOSE,
 )
 from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic
@@ -606,6 +606,8 @@ def draw_filename(state: AppState):
 
     font_size = 24
     color = get_filename_text_color(state)
+    shadow_color = RL_Color(0, 0, 0, 120)  # Semi-transparent dark shadow
+    shadow_offset = 2  # Offset for shadow
 
     if state.unicode_font:
         try:
@@ -614,6 +616,13 @@ def draw_filename(state: AppState):
             text_width = int(text_vec.x)
             x = (state.screenW - text_width) // 2
             y = 40
+            # Draw shadow first (offset and blurred effect via multiple draws)
+            for dx in range(-1, 2):
+                for dy in range(0, 3):
+                    if dx != 0 or dy != 0:
+                        rl.DrawTextEx(state.unicode_font, filename_bytes,
+                                      RL_V2(x + dx, y + dy), font_size, 1.0, shadow_color)
+            # Draw main text on top
             rl.DrawTextEx(state.unicode_font, filename_bytes, RL_V2(x, y), font_size, 1.0, color)
             return
         except Exception:
@@ -626,6 +635,12 @@ def draw_filename(state: AppState):
 
     x = (state.screenW - text_width) // 2
     y = 40
+    # Draw shadow first
+    for dx in range(-1, 2):
+        for dy in range(0, 3):
+            if dx != 0 or dy != 0:
+                RL_DrawText(filename, x + dx, y + dy, font_size, shadow_color)
+    # Draw main text
     RL_DrawText(filename, x, y, font_size, color)
 
 
@@ -767,8 +782,14 @@ def update_toolbar_alpha(state: AppState):
 def get_toolbar_panel_bounds(state: AppState) -> tuple:
     """Get toolbar panel bounds (x, width)."""
     sw = state.screenW
-    n_buttons = len(state.ui.toolbar.buttons)
-    buttons_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+    toolbar = state.ui.toolbar
+    n_buttons = len(toolbar.buttons)
+    n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
+    separator_width = TOOLBAR_BTN_SPACING
+
+    buttons_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
+                     (n_buttons - 1) * TOOLBAR_BTN_SPACING +
+                     n_separators * separator_width)
     min_panel_width = buttons_width + TOOLBAR_BTN_RADIUS * 2 * 2
     panel_width = max(min_panel_width, int(sw * 0.6))
     panel_x = (sw - panel_width) // 2
@@ -790,16 +811,28 @@ def get_toolbar_button_at(state: AppState, mx: float, my: float) -> int:
         return -1
 
     n_buttons = len(toolbar.buttons)
-    total_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+    n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
+    separator_width = TOOLBAR_BTN_SPACING
+
+    total_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
+                   (n_buttons - 1) * TOOLBAR_BTN_SPACING +
+                   n_separators * separator_width)
     start_x = (state.screenW - total_width) // 2 + TOOLBAR_BTN_RADIUS
     cy = TOOLBAR_HEIGHT // 2
 
-    for i in range(n_buttons):
-        cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+    current_x = start_x
+    for i, btn in enumerate(toolbar.buttons):
+        cx = current_x
         dx = mx - cx
         dy = my - cy
         if (dx * dx + dy * dy) <= (TOOLBAR_BTN_RADIUS * TOOLBAR_BTN_RADIUS):
             return i
+
+        # Move to next button position
+        current_x += TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING
+        if btn.separator_after:
+            current_x += separator_width
+
     return -1
 
 
@@ -893,6 +926,54 @@ def draw_flip_icon(cx: int, cy: int, r: float, color):
                  RL_V2(cx + gap, cy + arrow_h), 2.0, color)
 
 
+def draw_gear_icon(cx: int, cy: int, r: float, color):
+    """Draw gear/settings icon."""
+    # Outer circle with teeth
+    teeth = 8
+    outer_r = r
+    inner_r = r * 0.6
+    tooth_depth = r * 0.25
+
+    # Draw gear teeth
+    for i in range(teeth):
+        angle = (2 * math.pi * i / teeth)
+        next_angle = (2 * math.pi * (i + 0.5) / teeth)
+
+        # Tooth outer corners
+        x1 = cx + (outer_r + tooth_depth) * math.cos(angle - math.pi / teeth / 2)
+        y1 = cy + (outer_r + tooth_depth) * math.sin(angle - math.pi / teeth / 2)
+        x2 = cx + (outer_r + tooth_depth) * math.cos(angle + math.pi / teeth / 2)
+        y2 = cy + (outer_r + tooth_depth) * math.sin(angle + math.pi / teeth / 2)
+
+        # Tooth base corners
+        x3 = cx + outer_r * math.cos(angle + math.pi / teeth / 2)
+        y3 = cy + outer_r * math.sin(angle + math.pi / teeth / 2)
+        x4 = cx + outer_r * math.cos(next_angle - math.pi / teeth / 2)
+        y4 = cy + outer_r * math.sin(next_angle - math.pi / teeth / 2)
+
+        # Draw tooth
+        rl.DrawLineEx(RL_V2(x1, y1), RL_V2(x2, y2), 2.0, color)
+        rl.DrawLineEx(RL_V2(x2, y2), RL_V2(x3, y3), 2.0, color)
+        rl.DrawLineEx(RL_V2(x3, y3), RL_V2(x4, y4), 2.0, color)
+
+        # Connect to next tooth
+        x5 = cx + outer_r * math.cos(next_angle - math.pi / teeth / 2)
+        y5 = cy + outer_r * math.sin(next_angle - math.pi / teeth / 2)
+        x6 = cx + (outer_r + tooth_depth) * math.cos(next_angle - math.pi / teeth / 2)
+        y6 = cy + (outer_r + tooth_depth) * math.sin(next_angle - math.pi / teeth / 2)
+
+    # Draw inner circle (hole)
+    segments = 16
+    for i in range(segments):
+        angle1 = 2 * math.pi * i / segments
+        angle2 = 2 * math.pi * (i + 1) / segments
+        x1 = cx + inner_r * math.cos(angle1)
+        y1 = cy + inner_r * math.sin(angle1)
+        x2 = cx + inner_r * math.cos(angle2)
+        y2 = cy + inner_r * math.sin(angle2)
+        rl.DrawLineEx(RL_V2(x1, y1), RL_V2(x2, y2), 2.0, color)
+
+
 def draw_toolbar(state: AppState):
     """Draw top toolbar with action buttons."""
     toolbar = state.ui.toolbar
@@ -902,9 +983,14 @@ def draw_toolbar(state: AppState):
     sw = state.screenW
     alpha = toolbar.alpha
 
-    # Calculate button positions (centered)
+    # Count separators for width calculation
     n_buttons = len(toolbar.buttons)
-    buttons_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+    n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
+    separator_width = TOOLBAR_BTN_SPACING  # Extra spacing for separator
+
+    buttons_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
+                     (n_buttons - 1) * TOOLBAR_BTN_SPACING +
+                     n_separators * separator_width)
     min_panel_width = buttons_width + TOOLBAR_BTN_RADIUS * 2 * 2  # +1 button on each side
     panel_width = max(min_panel_width, int(sw * 0.6))  # 60% of screen or minimum
 
@@ -933,8 +1019,9 @@ def draw_toolbar(state: AppState):
     start_x = (sw - buttons_width) // 2 + TOOLBAR_BTN_RADIUS
     cy = TOOLBAR_HEIGHT // 2
 
+    current_x = start_x
     for i, btn in enumerate(toolbar.buttons):
-        cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+        cx = current_x
         is_hover = (i == toolbar.hover_index)
 
         btn_alpha = int(255 * alpha)
@@ -945,12 +1032,26 @@ def draw_toolbar(state: AppState):
         # Draw icon
         icon_r = TOOLBAR_BTN_RADIUS * 0.45
         icon_color = RL_Color(255, 255, 255, btn_alpha)
-        if btn.id == ToolbarButtonId.ROTATE_CW:
+        if btn.id == ToolbarButtonId.SETTINGS:
+            draw_gear_icon(cx, cy, icon_r, icon_color)
+        elif btn.id == ToolbarButtonId.ROTATE_CW:
             draw_rotate_icon(cx, cy, icon_r, clockwise=True, color=icon_color)
         elif btn.id == ToolbarButtonId.ROTATE_CCW:
             draw_rotate_icon(cx, cy, icon_r, clockwise=False, color=icon_color)
         elif btn.id == ToolbarButtonId.FLIP_H:
             draw_flip_icon(cx, cy, icon_r, icon_color)
+
+        # Move to next button position
+        current_x += TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING
+
+        # Draw separator after this button if needed
+        if btn.separator_after and i < n_buttons - 1:
+            sep_x = current_x - TOOLBAR_BTN_SPACING // 2
+            sep_alpha = int(150 * alpha)
+            rl.DrawLineEx(RL_V2(sep_x, cy - TOOLBAR_BTN_RADIUS * 0.7),
+                         RL_V2(sep_x, cy + TOOLBAR_BTN_RADIUS * 0.7),
+                         2.0, RL_Color(255, 255, 255, sep_alpha))
+            current_x += separator_width
 
 
 def get_context_menu_item_at(state: AppState, mx: float, my: float) -> int:
@@ -1028,6 +1129,282 @@ def draw_context_menu(state: AppState):
             RL_DrawText(item.label, text_x, text_y, font_size, text_color)
 
         item_y += MENU_ITEM_HEIGHT
+
+
+# Settings window configuration items
+# Format: (display_label, config_key, value_type, min_val, max_val)
+SETTINGS_ITEMS = [
+    ("Performance", None, None, None, None),  # Section header
+    ("TARGET_FPS", "TARGET_FPS", int, 30, 240),
+    ("ASYNC_WORKERS", "ASYNC_WORKERS", int, 1, 32),
+    ("Animation (ms)", None, None, None, None),  # Section header
+    ("ANIM_SWITCH_KEYS_MS", "ANIM_SWITCH_KEYS_MS", int, 0, 2000),
+    ("ANIM_OPEN_MS", "ANIM_OPEN_MS", int, 0, 2000),
+    ("ANIM_ZOOM_MS", "ANIM_ZOOM_MS", int, 0, 500),
+    ("GALLERY_SLIDE_MS", "GALLERY_SLIDE_MS", int, 0, 500),
+    ("Zoom", None, None, None, None),  # Section header
+    ("ZOOM_STEP_KEYS", "ZOOM_STEP_KEYS", float, 0.001, 0.1),
+    ("ZOOM_STEP_WHEEL", "ZOOM_STEP_WHEEL", float, 0.01, 0.5),
+    ("Font", None, None, None, None),  # Section header
+    ("FONT_SIZE", "FONT_SIZE", int, 12, 48),
+]
+
+
+def get_settings_item_index(item_idx: int) -> int:
+    """Convert visual item index to editable item index (skip headers)."""
+    editable_idx = 0
+    for i, item in enumerate(SETTINGS_ITEMS):
+        if item[1] is not None:  # Not a header
+            if i == item_idx:
+                return editable_idx
+            editable_idx += 1
+    return -1
+
+
+def save_config_value(config_key: str, value, val_type: type) -> bool:
+    """Save a single config value to config.py file."""
+    import imagura.config as cfg
+    config_path = os.path.join(os.path.dirname(__file__), "imagura", "config.py")
+
+    try:
+        # Read current file
+        with open(config_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        # Find and replace the value
+        import re
+        if val_type == float:
+            pattern = rf'^({config_key}\s*=\s*)[\d.]+(.*)$'
+            replacement = rf'\g<1>{value}\2'
+        else:
+            pattern = rf'^({config_key}\s*=\s*)\d+(.*)$'
+            replacement = rf'\g<1>{int(value)}\2'
+
+        new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
+
+        if count == 0:
+            log(f"[SETTINGS][ERR] Could not find {config_key} in config.py")
+            return False
+
+        # Write back
+        with open(config_path, 'w', encoding='utf-8') as f:
+            f.write(new_content)
+
+        # Update runtime value
+        setattr(cfg, config_key, val_type(value))
+        log(f"[SETTINGS] Saved {config_key} = {value}")
+        return True
+
+    except Exception as e:
+        log(f"[SETTINGS][ERR] Failed to save config: {e!r}")
+        return False
+
+
+def validate_settings_value(value_str: str, val_type: type, min_val, max_val) -> tuple:
+    """Validate a settings value. Returns (is_valid, parsed_value, error_msg)."""
+    if not value_str.strip():
+        return False, None, "Empty value"
+
+    try:
+        if val_type == int:
+            val = int(value_str)
+        elif val_type == float:
+            val = float(value_str)
+        else:
+            return False, None, "Unknown type"
+
+        if min_val is not None and val < min_val:
+            return False, None, f"Min: {min_val}"
+        if max_val is not None and val > max_val:
+            return False, None, f"Max: {max_val}"
+
+        return True, val, None
+
+    except ValueError:
+        return False, None, "Invalid number"
+
+
+def handle_settings_input(state: AppState) -> bool:
+    """Handle input for settings window. Returns True if input was consumed."""
+    settings = state.ui.settings
+    if not settings.visible:
+        return False
+
+    mouse = rl.GetMousePosition()
+
+    # Window dimensions (must match draw_settings_window)
+    win_w = 400
+    win_h = 500
+    win_x = (state.screenW - win_w) // 2
+    win_y = (state.screenH - win_h) // 2
+
+    # Check close button click
+    close_x = win_x + win_w - 35
+    close_y = win_y + 5
+    if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+        if close_x <= mouse.x <= close_x + 30 and close_y <= mouse.y <= close_y + 30:
+            settings.hide()
+            return True
+
+    # Handle editing mode
+    if settings.editing_item >= 0:
+        # Get key input
+        key = rl.GetCharPressed()
+        while key > 0:
+            # Allow digits, decimal point, minus
+            if (48 <= key <= 57) or key == 46 or key == 45:  # 0-9, '.', '-'
+                settings.edit_value += chr(key)
+            key = rl.GetCharPressed()
+
+        # Backspace
+        if rl.IsKeyPressed(rl.KEY_BACKSPACE) and len(settings.edit_value) > 0:
+            settings.edit_value = settings.edit_value[:-1]
+
+        # Enter - save value
+        if rl.IsKeyPressed(rl.KEY_ENTER):
+            # Find the item being edited
+            editable_idx = 0
+            for item in SETTINGS_ITEMS:
+                if item[1] is not None:  # Not a header
+                    if editable_idx == settings.editing_item:
+                        label, config_key, val_type, min_val, max_val = item
+                        is_valid, parsed_val, error = validate_settings_value(
+                            settings.edit_value, val_type, min_val, max_val
+                        )
+                        if is_valid:
+                            save_config_value(config_key, parsed_val, val_type)
+                            settings.editing_item = -1
+                            settings.edit_value = ""
+                        else:
+                            log(f"[SETTINGS] Validation failed: {error}")
+                        break
+                    editable_idx += 1
+            return True
+
+        # Escape - cancel editing
+        if rl.IsKeyPressed(rl.KEY_ESCAPE):
+            settings.editing_item = -1
+            settings.edit_value = ""
+            return True
+
+        return True  # Consume all input while editing
+
+    # ESC closes settings when not editing
+    if rl.IsKeyPressed(rl.KEY_ESCAPE):
+        settings.hide()
+        return True
+
+    # Handle item click to start editing
+    if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+        item_y = win_y + 50
+        item_h = 28
+        val_x = win_x + win_w - 110
+        val_w = 100
+
+        editable_idx = 0
+        for item in SETTINGS_ITEMS:
+            label, config_key, val_type, min_val, max_val = item if len(item) == 5 else (item[0], item[1], None, None, None)
+
+            if config_key is not None:  # Editable item
+                # Check if click is in value area
+                if (val_x <= mouse.x <= val_x + val_w and
+                    item_y <= mouse.y <= item_y + item_h):
+                    import imagura.config as cfg
+                    current_val = getattr(cfg, config_key, 0)
+                    settings.editing_item = editable_idx
+                    settings.edit_value = str(current_val)
+                    return True
+                editable_idx += 1
+
+            item_y += item_h
+
+    return False
+
+
+def draw_settings_window(state: AppState):
+    """Draw settings window overlay."""
+    settings = state.ui.settings
+    if not settings.visible:
+        return
+
+    # Window dimensions
+    win_w = 400
+    win_h = 500
+    win_x = (state.screenW - win_w) // 2
+    win_y = (state.screenH - win_h) // 2
+
+    # Darken background
+    rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(0, 0, 0, 150))
+
+    # Window background
+    rl.DrawRectangle(win_x, win_y, win_w, win_h, RL_Color(30, 30, 30, 250))
+    rl.DrawRectangleLines(win_x, win_y, win_w, win_h, RL_Color(100, 100, 100, 255))
+
+    # Title
+    title = "Settings"
+    title_size = 22
+    RL_DrawText(title, win_x + 20, win_y + 15, title_size, RL_Color(255, 255, 255, 255))
+
+    # Close button (X)
+    close_x = win_x + win_w - 30
+    close_y = win_y + 10
+    rl.DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
+
+    # Settings items
+    item_y = win_y + 50
+    item_h = 28
+    padding_x = 20
+    val_x = win_x + win_w - 110
+    val_w = 90
+
+    import imagura.config as cfg
+    editable_idx = 0
+
+    for item in SETTINGS_ITEMS:
+        label, config_key, val_type, min_val, max_val = item if len(item) == 5 else (item[0], item[1], None, None, None)
+
+        if config_key is None:
+            # Section header
+            rl.DrawRectangle(win_x, item_y, win_w, item_h, RL_Color(50, 50, 50, 255))
+            RL_DrawText(label, win_x + padding_x, item_y + 6, 16, RL_Color(180, 180, 180, 255))
+        else:
+            # Config item
+            current_val = getattr(cfg, config_key, "?")
+
+            # Draw label
+            RL_DrawText(f"  {label}:", win_x + padding_x, item_y + 6, 14, RL_Color(200, 200, 200, 255))
+
+            # Check if this item is being edited
+            is_editing = (settings.editing_item == editable_idx)
+
+            # Draw value background (edit field)
+            if is_editing:
+                rl.DrawRectangle(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(60, 60, 80, 255))
+                rl.DrawRectangleLines(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(100, 150, 255, 255))
+                # Draw edit value with cursor
+                display_val = settings.edit_value
+                cursor = "|" if (int(now() * 2) % 2 == 0) else ""
+                RL_DrawText(display_val + cursor, val_x, item_y + 6, 14, RL_Color(255, 255, 255, 255))
+            else:
+                # Hover highlight
+                mouse = rl.GetMousePosition()
+                if (val_x - 5 <= mouse.x <= val_x + val_w + 5 and
+                    item_y <= mouse.y <= item_y + item_h):
+                    rl.DrawRectangle(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(50, 50, 60, 255))
+
+                val_str = str(current_val)
+                RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
+
+            editable_idx += 1
+
+        item_y += item_h
+
+    # Footer hint
+    if settings.editing_item >= 0:
+        hint = "Enter: Save | Esc: Cancel"
+    else:
+        hint = "Click value to edit | Esc: Close"
+    RL_DrawText(hint, win_x + 20, win_y + win_h - 25, 12, RL_Color(120, 120, 120, 255))
 
 
 def delete_to_recycle_bin(file_path: str) -> bool:
@@ -1888,6 +2265,10 @@ def main():
             if should_close:
                 break
 
+            # Handle settings window input first (blocks other input when visible)
+            if state.ui.settings.visible:
+                handle_settings_input(state)
+
             rl.BeginDrawing()
             apply_bg_mode(state)
 
@@ -1923,12 +2304,9 @@ def main():
                     increment_frame()
                     continue
 
-            # Right-click shows context menu
+            # Right-click shows context menu (don't skip rendering)
             if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT) and not menu.visible:
                 menu.show(int(mouse.x), int(mouse.y))
-                rl.EndDrawing()
-                increment_frame()
-                continue
 
             # ─── Toolbar Input ──────────────────────────────────────────────────
             toolbar = state.ui.toolbar
@@ -1950,7 +2328,9 @@ def main():
                 btn = toolbar.buttons[toolbar.hover_index]
                 log(f"[TOOLBAR] Clicked: {btn.tooltip}")
 
-                if state.index < len(state.current_dir_images):
+                if btn.id == ToolbarButtonId.SETTINGS:
+                    state.ui.settings.show()
+                elif state.index < len(state.current_dir_images):
                     path = state.current_dir_images[state.index]
 
                     if btn.id == ToolbarButtonId.ROTATE_CW:
@@ -1995,7 +2375,7 @@ def main():
                     continue
 
             if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
-                if rl.IsKeyDown(KEY_ZOOM_IN):
+                if rl.IsKeyDown(KEY_ZOOM_IN) or rl.IsKeyDown(KEY_ZOOM_IN_ALT):
                     nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 + ZOOM_STEP_KEYS),
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
                     nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
@@ -2007,7 +2387,7 @@ def main():
                         save_view_for_path(state, path, nv)
                         state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
-                if rl.IsKeyDown(KEY_ZOOM_OUT):
+                if rl.IsKeyDown(KEY_ZOOM_OUT) or rl.IsKeyDown(KEY_ZOOM_OUT_ALT):
                     nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 - ZOOM_STEP_KEYS),
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
                     nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
@@ -2147,12 +2527,18 @@ def main():
                 else:
                     RL_DrawText(f"curr_tex=None", 12, hud_y + line_spacing * 3, 16, rl.LIGHTGRAY)
 
-            # Draw toolbar and context menu (on top of everything)
+            # Draw toolbar, context menu and settings (on top of everything)
             draw_toolbar(state)
             draw_context_menu(state)
+            draw_settings_window(state)
 
             rl.EndDrawing()
             increment_frame()
+
+            # Skip other key handling when settings is open
+            if state.ui.settings.visible:
+                continue
+
             if rl.IsKeyPressed(KEY_CLOSE):
                 break
             if should_close:
