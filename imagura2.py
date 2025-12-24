@@ -390,20 +390,37 @@ def win_set_blur(hwnd, enabled: bool):
         WinBlur.disable(hwnd)
 
 
+# Track current blur state to avoid calling DWM APIs every frame
+_current_blur_enabled: Optional[bool] = None
+
+
 def apply_bg_mode(state: AppState):
+    global _current_blur_enabled
+
     mode = BG_MODES[state.bg_mode_index]
-    win_set_blur(state.hwnd, mode["blur"])
+    blur_wanted = mode["blur"]
+
+    # Only call DWM APIs when blur state actually changes
+    if _current_blur_enabled != blur_wanted:
+        win_set_blur(state.hwnd, blur_wanted)
+        _current_blur_enabled = blur_wanted
+        log(f"[BG] Blur {'enabled' if blur_wanted else 'disabled'}")
+
     c = mode["color"]
     a = clamp(state.bg_current_opacity, 0.0, 1.0)
 
-    if mode["blur"]:
+    if blur_wanted:
+        # For blur mode: clear to transparent, then draw semi-opaque overlay
         try:
             rl.ClearBackground(rl.BLANK)
         except Exception:
             rl.ClearBackground(RL_Color(0, 0, 0, 0))
-        rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(c[0], c[1], c[2], int(255 * a)))
+        # Draw overlay only if opacity > 0
+        if a > 0.01:
+            rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(c[0], c[1], c[2], int(255 * a)))
     else:
-        col = RL_Color(c[0], c[1], c[2], int(255 * a))
+        # Solid background
+        col = RL_Color(c[0], c[1], c[2], 255)
         rl.ClearBackground(col)
 
 
@@ -1348,7 +1365,7 @@ def draw_settings_window(state: AppState):
     # Close button (X)
     close_x = win_x + win_w - 30
     close_y = win_y + 10
-    rl.DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
+    RL_DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
 
     # Settings items
     item_y = win_y + 50
@@ -2236,11 +2253,9 @@ def main():
                 log("[INIT] Font loaded after first render")
 
             if not blur_enabled and state.cache.curr and first_render_done and not state.open_anim_active:
-                mode = BG_MODES[state.bg_mode_index]
-                if mode["blur"]:
-                    WinBlur.enable(state.hwnd)
+                # Initial blur setup is now handled by apply_bg_mode via _current_blur_enabled
                 blur_enabled = True
-                log("[INIT] Blur enabled after first render")
+                log("[INIT] Background mode active after first render")
 
             if state.cache.curr and state.open_anim_active and state.view.scale == 0.5:
                 state.view = compute_fit_view(state, FIT_OPEN_SCALE)
