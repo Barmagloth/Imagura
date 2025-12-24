@@ -7,12 +7,12 @@ TARGET_FPS = 120
 ASYNC_WORKERS = 10
 
 # Animation durations (milliseconds)
-ANIM_SWITCH_KEYS_MS = 700
+ANIM_SWITCH_KEYS_MS = 200
 ANIM_SWITCH_GALLERY_MS = 10
 ANIM_TOGGLE_ZOOM_MS = 150
-ANIM_OPEN_MS = 700
+ANIM_OPEN_MS = 300
 ANIM_ZOOM_MS = 100
-GALLERY_SLIDE_MS = 150
+GALLERY_SLIDE_MS = 50
 
 # View defaults
 FIT_DEFAULT_SCALE = 0.95
@@ -60,6 +60,25 @@ THUMB_BUILD_BUDGET_PER_FRAME = 2
 # Input
 DOUBLE_CLICK_TIME_MS = 300
 IDLE_THRESHOLD_SECONDS = 0.5
+
+# Font settings
+FONT_SIZE = 26
+FONT_ANTIALIAS = True
+
+# Hotkeys (raylib key codes)
+# See: https://github.com/raysan5/raylib/blob/master/src/raylib.h
+KEY_TOGGLE_HUD = 73         # KEY_I
+KEY_TOGGLE_FILENAME = 78    # KEY_N
+KEY_CYCLE_BG = 86           # KEY_V
+KEY_DELETE_IMAGE = 261      # KEY_DELETE
+KEY_ZOOM_IN = 265           # KEY_UP
+KEY_ZOOM_OUT = 264          # KEY_DOWN
+KEY_TOGGLE_ZOOM = 70        # KEY_F
+KEY_NEXT_IMAGE = 262        # KEY_RIGHT
+KEY_NEXT_IMAGE_ALT = 68     # KEY_D
+KEY_PREV_IMAGE = 263        # KEY_LEFT
+KEY_PREV_IMAGE_ALT = 65     # KEY_A
+KEY_CLOSE = 256             # KEY_ESCAPE
 
 # Top toolbar
 TOOLBAR_TRIGGER_FRAC = 0.05  # Top 5% triggers toolbar

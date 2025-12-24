@@ -31,6 +31,10 @@ from imagura.config import (
     TOOLBAR_TRIGGER_FRAC, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
     TOOLBAR_BG_ALPHA, TOOLBAR_SLIDE_MS,
     MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING, MENU_BG_ALPHA, MENU_HOVER_ALPHA,
+    FONT_SIZE, FONT_ANTIALIAS,
+    KEY_TOGGLE_HUD, KEY_TOGGLE_FILENAME, KEY_CYCLE_BG, KEY_DELETE_IMAGE,
+    KEY_ZOOM_IN, KEY_ZOOM_OUT, KEY_TOGGLE_ZOOM,
+    KEY_NEXT_IMAGE, KEY_NEXT_IMAGE_ALT, KEY_PREV_IMAGE, KEY_PREV_IMAGE_ALT, KEY_CLOSE,
 )
 from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic
 from imagura.rl_compat import (
@@ -150,7 +154,11 @@ class IdleDetector:
 # It uses composition of sub-states while providing backward-compatible properties.
 
 
-def load_unicode_font(font_size: int = 24):
+def load_unicode_font(font_size: int = None):
+    """Load a Unicode font with Cyrillic support and optional antialiasing."""
+    if font_size is None:
+        font_size = FONT_SIZE
+
     font_paths = [
         "C:\\Windows\\Fonts\\segoeui.ttf",
         "C:\\Windows\\Fonts\\arial.ttf",
@@ -178,7 +186,16 @@ def load_unicode_font(font_size: int = 24):
                         font = rl.LoadFontEx(font_path.encode('utf-8'), font_size, cp_array, len(codepoints))
 
                 if hasattr(font, 'texture') and hasattr(font.texture, 'id') and font.texture.id > 0:
-                    log(f"[FONT] Loaded unicode font with Cyrillic: {os.path.basename(font_path)}")
+                    # Apply antialiasing (bilinear filtering) to font texture
+                    if FONT_ANTIALIAS:
+                        try:
+                            # TEXTURE_FILTER_BILINEAR = 1
+                            rl.SetTextureFilter(font.texture, 1)
+                            log(f"[FONT] Antialiasing enabled")
+                        except Exception as e:
+                            log(f"[FONT] Could not set antialias filter: {e!r}")
+
+                    log(f"[FONT] Loaded unicode font (size={font_size}): {os.path.basename(font_path)}")
                     return font
             except Exception as e:
                 log(f"[FONT][ERR] Failed to load {font_path}: {e!r}")
@@ -1837,7 +1854,7 @@ def main():
                 state.async_loader.poll_ui_events(max_events=100, filter_priority=False)
 
             if not font_loaded and state.cache.curr and first_render_done and not state.open_anim_active:
-                state.unicode_font = load_unicode_font(24)
+                state.unicode_font = load_unicode_font()
                 font_loaded = True
                 log("[INIT] Font loaded after first render")
 
@@ -1900,7 +1917,7 @@ def main():
                         increment_frame()
                         continue
 
-                if rl.IsKeyPressed(rl.KEY_ESCAPE):
+                if rl.IsKeyPressed(KEY_CLOSE):
                     menu.hide()
                     rl.EndDrawing()
                     increment_frame()
@@ -1957,18 +1974,18 @@ def main():
 
             state.idle_detector.mark_activity()
 
-            if rl.IsKeyPressed(rl.KEY_I):
+            if rl.IsKeyPressed(KEY_TOGGLE_HUD):
                 state.show_hud = not state.show_hud
 
-            if rl.IsKeyPressed(rl.KEY_N):
+            if rl.IsKeyPressed(KEY_TOGGLE_FILENAME):
                 state.show_filename = not state.show_filename
 
-            if rl.IsKeyPressed(rl.KEY_V):
+            if rl.IsKeyPressed(KEY_CYCLE_BG):
                 state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
                 state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
 
             # DEL key - delete image to recycle bin
-            if rl.IsKeyPressed(rl.KEY_DELETE) and not state.open_anim_active:
+            if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active:
                 if delete_current_image(state):
                     if len(state.current_dir_images) == 0:
                         # No more images - close app
@@ -1978,7 +1995,7 @@ def main():
                     continue
 
             if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
-                if rl.IsKeyDown(rl.KEY_UP):
+                if rl.IsKeyDown(KEY_ZOOM_IN):
                     nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 + ZOOM_STEP_KEYS),
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
                     nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
@@ -1990,7 +2007,7 @@ def main():
                         save_view_for_path(state, path, nv)
                         state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
-                if rl.IsKeyDown(rl.KEY_DOWN):
+                if rl.IsKeyDown(KEY_ZOOM_OUT):
                     nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 - ZOOM_STEP_KEYS),
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
                     nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
@@ -2031,7 +2048,7 @@ def main():
             mid_bot = state.screenH * 0.66
             in_mid = (mid_left <= mouse.x <= mid_right and mid_top <= mouse.y <= mid_bot)
 
-            if rl.IsKeyPressed(rl.KEY_F) and not state.toggle_zoom_active:
+            if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
                 start_toggle_zoom_animation(state)
 
             if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active:
@@ -2073,10 +2090,10 @@ def main():
                 edge_left = (mouse.x <= state.screenW * 0.10)
                 edge_right = (mouse.x >= state.screenW * 0.90)
 
-                if rl.IsKeyPressed(rl.KEY_RIGHT) or rl.IsKeyPressed(rl.KEY_D):
+                if rl.IsKeyPressed(KEY_NEXT_IMAGE) or rl.IsKeyPressed(KEY_NEXT_IMAGE_ALT):
                     if state.index + 1 < len(state.current_dir_images):
                         switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
-                if rl.IsKeyPressed(rl.KEY_LEFT) or rl.IsKeyPressed(rl.KEY_A):
+                if rl.IsKeyPressed(KEY_PREV_IMAGE) or rl.IsKeyPressed(KEY_PREV_IMAGE_ALT):
                     if state.index - 1 >= 0:
                         switch_to(state, state.index - 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
 
@@ -2136,7 +2153,7 @@ def main():
 
             rl.EndDrawing()
             increment_frame()
-            if rl.IsKeyPressed(rl.KEY_ESCAPE):
+            if rl.IsKeyPressed(KEY_CLOSE):
                 break
             if should_close:
                 break
