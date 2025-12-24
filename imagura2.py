@@ -28,6 +28,9 @@ from imagura.config import (
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA, GALLERY_SETTLE_DEBOUNCE_S,
     THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
     DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
+    TOOLBAR_TRIGGER_FRAC, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
+    TOOLBAR_BG_ALPHA, TOOLBAR_SLIDE_MS,
+    MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING, MENU_BG_ALPHA, MENU_HOVER_ALPHA,
 )
 from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic
 from imagura.rl_compat import (
@@ -58,6 +61,9 @@ from imagura.animation import (
     create_toggle_zoom_animation, create_zoom_animation,
 )
 from imagura.state import AppState
+from imagura.state.ui import ToolbarButtonId, MenuItemId
+from imagura.clipboard import copy_image_to_clipboard
+from imagura.transforms import rotate_image_file, flip_image_file
 
 # Aliases for compatibility
 RL_VER = RL_VERSION
@@ -712,6 +718,240 @@ def draw_nav_buttons(state: AppState):
         if dx * dx + dy * dy <= NAV_BTN_RADIUS * NAV_BTN_RADIUS:
             if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
                 switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Toolbar and Context Menu
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def update_toolbar_alpha(state: AppState):
+    """Animate toolbar visibility."""
+    toolbar = state.ui.toolbar
+    if abs(toolbar.alpha - toolbar.target_alpha) > 0.01:
+        speed = 1000.0 / TOOLBAR_SLIDE_MS
+        dt = rl.GetFrameTime()
+        if toolbar.target_alpha > toolbar.alpha:
+            toolbar.alpha = min(toolbar.target_alpha, toolbar.alpha + speed * dt)
+        else:
+            toolbar.alpha = max(toolbar.target_alpha, toolbar.alpha - speed * dt)
+    else:
+        toolbar.alpha = toolbar.target_alpha
+
+
+def is_in_toolbar_zone(state: AppState, mouse_y: float) -> bool:
+    """Check if mouse is in toolbar trigger zone."""
+    return mouse_y < state.screenH * TOOLBAR_TRIGGER_FRAC
+
+
+def get_toolbar_button_at(state: AppState, mx: float, my: float) -> int:
+    """Get toolbar button index at mouse position, or -1 if none."""
+    toolbar = state.ui.toolbar
+    if toolbar.alpha < 0.5:
+        return -1
+
+    n_buttons = len(toolbar.buttons)
+    total_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+    start_x = (state.screenW - total_width) // 2 + TOOLBAR_BTN_RADIUS
+    cy = TOOLBAR_HEIGHT // 2
+
+    for i in range(n_buttons):
+        cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+        dx = mx - cx
+        dy = my - cy
+        if (dx * dx + dy * dy) <= (TOOLBAR_BTN_RADIUS * TOOLBAR_BTN_RADIUS):
+            return i
+    return -1
+
+
+def draw_rotate_icon(cx: int, cy: int, r: float, clockwise: bool, color):
+    """Draw rotation arrow icon."""
+    segments = 8
+    start_angle = -60 if clockwise else 120
+    arc_span = 240
+
+    points = []
+    for i in range(segments + 1):
+        angle = math.radians(start_angle + (arc_span * i / segments))
+        if not clockwise:
+            angle = math.radians(start_angle + 180 - (arc_span * i / segments))
+        px = cx + r * math.cos(angle)
+        py = cy + r * math.sin(angle)
+        points.append((px, py))
+
+    for i in range(len(points) - 1):
+        rl.DrawLineEx(RL_V2(points[i][0], points[i][1]),
+                     RL_V2(points[i+1][0], points[i+1][1]), 2.0, color)
+
+    end_x, end_y = points[-1]
+    arrow_size = r * 0.4
+    if clockwise:
+        rl.DrawLineEx(RL_V2(end_x, end_y),
+                     RL_V2(end_x - arrow_size, end_y - arrow_size * 0.5), 2.0, color)
+        rl.DrawLineEx(RL_V2(end_x, end_y),
+                     RL_V2(end_x + arrow_size * 0.3, end_y - arrow_size), 2.0, color)
+    else:
+        rl.DrawLineEx(RL_V2(end_x, end_y),
+                     RL_V2(end_x + arrow_size, end_y - arrow_size * 0.5), 2.0, color)
+        rl.DrawLineEx(RL_V2(end_x, end_y),
+                     RL_V2(end_x - arrow_size * 0.3, end_y - arrow_size), 2.0, color)
+
+
+def draw_flip_icon(cx: int, cy: int, r: float, color):
+    """Draw horizontal flip icon."""
+    arrow_w = r * 0.6
+    arrow_h = r * 0.8
+    gap = r * 0.15
+
+    # Left arrow
+    rl.DrawLineEx(RL_V2(cx - gap - arrow_w, cy),
+                 RL_V2(cx - gap, cy - arrow_h), 2.0, color)
+    rl.DrawLineEx(RL_V2(cx - gap - arrow_w, cy),
+                 RL_V2(cx - gap, cy + arrow_h), 2.0, color)
+    rl.DrawLineEx(RL_V2(cx - gap, cy - arrow_h),
+                 RL_V2(cx - gap, cy + arrow_h), 2.0, color)
+
+    # Right arrow
+    rl.DrawLineEx(RL_V2(cx + gap + arrow_w, cy),
+                 RL_V2(cx + gap, cy - arrow_h), 2.0, color)
+    rl.DrawLineEx(RL_V2(cx + gap + arrow_w, cy),
+                 RL_V2(cx + gap, cy + arrow_h), 2.0, color)
+    rl.DrawLineEx(RL_V2(cx + gap, cy - arrow_h),
+                 RL_V2(cx + gap, cy + arrow_h), 2.0, color)
+
+
+def draw_toolbar(state: AppState):
+    """Draw top toolbar with action buttons."""
+    toolbar = state.ui.toolbar
+    if toolbar.alpha < 0.01:
+        return
+
+    sw = state.screenW
+    alpha = toolbar.alpha
+
+    # Background panel
+    bg_alpha = int(255 * TOOLBAR_BG_ALPHA * alpha)
+    rl.DrawRectangle(0, 0, sw, TOOLBAR_HEIGHT, RL_Color(0, 0, 0, bg_alpha))
+
+    # Calculate button positions (centered)
+    n_buttons = len(toolbar.buttons)
+    total_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+    start_x = (sw - total_width) // 2 + TOOLBAR_BTN_RADIUS
+    cy = TOOLBAR_HEIGHT // 2
+
+    for i, btn in enumerate(toolbar.buttons):
+        cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+        is_hover = (i == toolbar.hover_index)
+
+        btn_alpha = int(255 * alpha)
+        bg_btn_alpha = int(128 * alpha) if is_hover else int(80 * alpha)
+        rl.DrawCircle(cx, cy, TOOLBAR_BTN_RADIUS, RL_Color(0, 0, 0, bg_btn_alpha))
+        rl.DrawCircleLines(cx, cy, TOOLBAR_BTN_RADIUS, RL_Color(255, 255, 255, btn_alpha))
+
+        # Draw icon
+        icon_r = TOOLBAR_BTN_RADIUS * 0.45
+        icon_color = RL_Color(255, 255, 255, btn_alpha)
+        if btn.id == ToolbarButtonId.ROTATE_CW:
+            draw_rotate_icon(cx, cy, icon_r, clockwise=True, color=icon_color)
+        elif btn.id == ToolbarButtonId.ROTATE_CCW:
+            draw_rotate_icon(cx, cy, icon_r, clockwise=False, color=icon_color)
+        elif btn.id == ToolbarButtonId.FLIP_H:
+            draw_flip_icon(cx, cy, icon_r, icon_color)
+
+
+def get_context_menu_item_at(state: AppState, mx: float, my: float) -> int:
+    """Get context menu item index at mouse position, or -1 if none."""
+    menu = state.ui.context_menu
+    if not menu.visible:
+        return -1
+
+    n_items = len(menu.items)
+    menu_w = MENU_ITEM_WIDTH
+    menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
+
+    x = min(menu.x, state.screenW - menu_w - 5)
+    y = min(menu.y, state.screenH - menu_h - 5)
+    x = max(5, x)
+    y = max(5, y)
+
+    if not (x <= mx <= x + menu_w):
+        return -1
+
+    item_start_y = y + MENU_PADDING
+    for i in range(n_items):
+        item_y = item_start_y + i * MENU_ITEM_HEIGHT
+        if item_y <= my < item_y + MENU_ITEM_HEIGHT:
+            return i
+    return -1
+
+
+def draw_context_menu(state: AppState):
+    """Draw right-click context menu."""
+    menu = state.ui.context_menu
+    if not menu.visible:
+        return
+
+    n_items = len(menu.items)
+    if n_items == 0:
+        return
+
+    menu_w = MENU_ITEM_WIDTH
+    menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
+
+    x = min(menu.x, state.screenW - menu_w - 5)
+    y = min(menu.y, state.screenH - menu_h - 5)
+    x = max(5, x)
+    y = max(5, y)
+
+    # Shadow
+    rl.DrawRectangle(x + 4, y + 4, menu_w, menu_h, RL_Color(0, 0, 0, 100))
+    # Background
+    rl.DrawRectangle(x, y, menu_w, menu_h, RL_Color(40, 40, 40, int(255 * MENU_BG_ALPHA)))
+    rl.DrawRectangleLines(x, y, menu_w, menu_h, RL_Color(80, 80, 80, 255))
+
+    item_y = y + MENU_PADDING
+    for i, item in enumerate(menu.items):
+        is_hover = (i == menu.hover_index)
+
+        if is_hover:
+            rl.DrawRectangle(x + 2, item_y, menu_w - 4, MENU_ITEM_HEIGHT,
+                           RL_Color(255, 255, 255, int(255 * MENU_HOVER_ALPHA)))
+
+        text_color = RL_Color(255, 255, 255, 255) if is_hover else RL_Color(200, 200, 200, 255)
+        text_x = x + MENU_PADDING + 8
+        text_y = item_y + (MENU_ITEM_HEIGHT - 16) // 2
+        RL_DrawText(item.label, text_x, text_y, 16, text_color)
+
+        item_y += MENU_ITEM_HEIGHT
+
+
+def reload_current_image(state: AppState):
+    """Reload current image after transformation."""
+    if state.index >= len(state.current_dir_images):
+        return
+
+    path = state.current_dir_images[state.index]
+    log(f"[TRANSFORM] Reloading image: {os.path.basename(path)}")
+
+    # Unload current texture
+    if state.cache.curr:
+        try:
+            if getattr(state.cache.curr.tex, 'id', 0):
+                state.to_unload.append(state.cache.curr.tex)
+        except Exception:
+            pass
+        state.cache.curr = None
+
+    # Also invalidate thumbnail
+    if path in state.thumb_cache:
+        bt = state.thumb_cache.pop(path)
+        if bt.texture:
+            try:
+                rl.UnloadTexture(bt.texture)
+            except Exception:
+                pass
+
+    # Reload
+    preload_neighbors(state, state.index, skip_neighbors=True)
 
 
 def schedule_thumbs(state: AppState, around_index: int):
@@ -1403,6 +1643,7 @@ def main():
             update_gallery_visibility_and_slide(state)
             update_gallery_scroll(state)
             reconcile_gallery_target(state)
+            update_toolbar_alpha(state)
 
             if not state.open_anim_active:
                 process_thumb_queue(state)
@@ -1415,6 +1656,82 @@ def main():
             apply_bg_mode(state)
 
             mouse = rl.GetMousePosition()
+
+            # ─── Context Menu Input ─────────────────────────────────────────────
+            menu = state.ui.context_menu
+            if menu.visible:
+                menu.hover_index = get_context_menu_item_at(state, mouse.x, mouse.y)
+
+                if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+                    if menu.hover_index >= 0:
+                        item = menu.items[menu.hover_index]
+                        log(f"[MENU] Clicked: {item.label}")
+                        menu.hide()
+                        # Execute action
+                        if item.id == MenuItemId.COPY:
+                            if state.index < len(state.current_dir_images):
+                                path = state.current_dir_images[state.index]
+                                copy_image_to_clipboard(path)
+                        rl.EndDrawing()
+                        increment_frame()
+                        continue
+                    else:
+                        menu.hide()
+                        rl.EndDrawing()
+                        increment_frame()
+                        continue
+
+                if rl.IsKeyPressed(rl.KEY_ESCAPE):
+                    menu.hide()
+                    rl.EndDrawing()
+                    increment_frame()
+                    continue
+
+            # Right-click shows context menu
+            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT) and not menu.visible:
+                menu.show(int(mouse.x), int(mouse.y))
+                rl.EndDrawing()
+                increment_frame()
+                continue
+
+            # ─── Toolbar Input ──────────────────────────────────────────────────
+            toolbar = state.ui.toolbar
+
+            # Update toolbar visibility based on mouse position
+            if is_in_toolbar_zone(state, mouse.y):
+                toolbar.target_alpha = 1.0
+            else:
+                toolbar.target_alpha = 0.0
+
+            # Update toolbar hover
+            if toolbar.alpha > 0.1:
+                toolbar.hover_index = get_toolbar_button_at(state, mouse.x, mouse.y)
+            else:
+                toolbar.hover_index = -1
+
+            # Toolbar button click
+            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and toolbar.hover_index >= 0:
+                btn = toolbar.buttons[toolbar.hover_index]
+                log(f"[TOOLBAR] Clicked: {btn.tooltip}")
+
+                if state.index < len(state.current_dir_images):
+                    path = state.current_dir_images[state.index]
+
+                    if btn.id == ToolbarButtonId.ROTATE_CW:
+                        if rotate_image_file(path, clockwise=True):
+                            reload_current_image(state)
+                    elif btn.id == ToolbarButtonId.ROTATE_CCW:
+                        if rotate_image_file(path, clockwise=False):
+                            reload_current_image(state)
+                    elif btn.id == ToolbarButtonId.FLIP_H:
+                        if flip_image_file(path, horizontal=True):
+                            reload_current_image(state)
+
+                rl.EndDrawing()
+                increment_frame()
+                continue
+
+            # ─── Regular Input ──────────────────────────────────────────────────
 
             if check_close_button_click(state):
                 break
@@ -1583,6 +1900,10 @@ def main():
                                 hud_y + line_spacing * 3, 16, rl.LIGHTGRAY)
                 else:
                     RL_DrawText(f"curr_tex=None", 12, hud_y + line_spacing * 3, 16, rl.LIGHTGRAY)
+
+            # Draw toolbar and context menu (on top of everything)
+            draw_toolbar(state)
+            draw_context_menu(state)
 
             rl.EndDrawing()
             increment_frame()
