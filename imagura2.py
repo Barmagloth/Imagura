@@ -1265,6 +1265,31 @@ def handle_settings_input(state: AppState) -> bool:
 
     # Handle editing mode
     if settings.editing_item >= 0:
+        # Click outside edit field cancels editing
+        if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+            # Calculate position of currently editing field
+            item_y = win_y + 50
+            item_h = 28
+            val_x = win_x + win_w - 110
+            val_w = 100
+
+            editable_idx = 0
+            edit_field_y = item_y
+            for item in SETTINGS_ITEMS:
+                if item[1] is not None:  # Not a header
+                    if editable_idx == settings.editing_item:
+                        edit_field_y = item_y
+                        break
+                    editable_idx += 1
+                item_y += item_h
+
+            # Check if click is outside the edit field
+            if not (val_x - 5 <= mouse.x <= val_x + val_w + 5 and
+                    edit_field_y <= mouse.y <= edit_field_y + item_h):
+                settings.editing_item = -1
+                settings.edit_value = ""
+                return True
+
         # Get key input
         key = rl.GetCharPressed()
         while key > 0:
@@ -1358,14 +1383,28 @@ def draw_settings_window(state: AppState):
     rl.DrawRectangleLines(win_x, win_y, win_w, win_h, RL_Color(100, 100, 100, 255))
 
     # Title
-    title = "Settings"
+    title = "Настройки"
     title_size = 22
-    RL_DrawText(title, win_x + 20, win_y + 15, title_size, RL_Color(255, 255, 255, 255))
+    if state.unicode_font:
+        try:
+            rl.DrawTextEx(state.unicode_font, title.encode('utf-8'),
+                          RL_V2(win_x + 20, win_y + 15), title_size, 1.0, RL_Color(255, 255, 255, 255))
+        except Exception:
+            RL_DrawText("Settings", win_x + 20, win_y + 15, title_size, RL_Color(255, 255, 255, 255))
+    else:
+        RL_DrawText("Settings", win_x + 20, win_y + 15, title_size, RL_Color(255, 255, 255, 255))
 
     # Close button (X)
     close_x = win_x + win_w - 30
     close_y = win_y + 10
-    RL_DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
+    if state.unicode_font:
+        try:
+            rl.DrawTextEx(state.unicode_font, b"X",
+                          RL_V2(close_x, close_y), 20, 1.0, RL_Color(200, 200, 200, 255))
+        except Exception:
+            RL_DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
+    else:
+        RL_DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
 
     # Settings items
     item_y = win_y + 50
@@ -1383,13 +1422,28 @@ def draw_settings_window(state: AppState):
         if config_key is None:
             # Section header
             rl.DrawRectangle(win_x, item_y, win_w, item_h, RL_Color(50, 50, 50, 255))
-            RL_DrawText(label, win_x + padding_x, item_y + 6, 16, RL_Color(180, 180, 180, 255))
+            if state.unicode_font:
+                try:
+                    rl.DrawTextEx(state.unicode_font, label.encode('utf-8'),
+                                  RL_V2(win_x + padding_x, item_y + 6), 16, 1.0, RL_Color(180, 180, 180, 255))
+                except Exception:
+                    RL_DrawText(label, win_x + padding_x, item_y + 6, 16, RL_Color(180, 180, 180, 255))
+            else:
+                RL_DrawText(label, win_x + padding_x, item_y + 6, 16, RL_Color(180, 180, 180, 255))
         else:
             # Config item
             current_val = getattr(cfg, config_key, "?")
 
             # Draw label
-            RL_DrawText(f"  {label}:", win_x + padding_x, item_y + 6, 14, RL_Color(200, 200, 200, 255))
+            label_text = f"  {label}:"
+            if state.unicode_font:
+                try:
+                    rl.DrawTextEx(state.unicode_font, label_text.encode('utf-8'),
+                                  RL_V2(win_x + padding_x, item_y + 6), 14, 1.0, RL_Color(200, 200, 200, 255))
+                except Exception:
+                    RL_DrawText(label_text, win_x + padding_x, item_y + 6, 14, RL_Color(200, 200, 200, 255))
+            else:
+                RL_DrawText(label_text, win_x + padding_x, item_y + 6, 14, RL_Color(200, 200, 200, 255))
 
             # Check if this item is being edited
             is_editing = (settings.editing_item == editable_idx)
@@ -1401,7 +1455,15 @@ def draw_settings_window(state: AppState):
                 # Draw edit value with cursor
                 display_val = settings.edit_value
                 cursor = "|" if (int(now() * 2) % 2 == 0) else ""
-                RL_DrawText(display_val + cursor, val_x, item_y + 6, 14, RL_Color(255, 255, 255, 255))
+                edit_text = display_val + cursor
+                if state.unicode_font:
+                    try:
+                        rl.DrawTextEx(state.unicode_font, edit_text.encode('utf-8'),
+                                      RL_V2(val_x, item_y + 6), 14, 1.0, RL_Color(255, 255, 255, 255))
+                    except Exception:
+                        RL_DrawText(edit_text, val_x, item_y + 6, 14, RL_Color(255, 255, 255, 255))
+                else:
+                    RL_DrawText(edit_text, val_x, item_y + 6, 14, RL_Color(255, 255, 255, 255))
             else:
                 # Hover highlight
                 mouse = rl.GetMousePosition()
@@ -1410,7 +1472,14 @@ def draw_settings_window(state: AppState):
                     rl.DrawRectangle(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(50, 50, 60, 255))
 
                 val_str = str(current_val)
-                RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
+                if state.unicode_font:
+                    try:
+                        rl.DrawTextEx(state.unicode_font, val_str.encode('utf-8'),
+                                      RL_V2(val_x, item_y + 6), 14, 1.0, RL_Color(100, 200, 255, 255))
+                    except Exception:
+                        RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
+                else:
+                    RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
 
             editable_idx += 1
 
@@ -1418,10 +1487,17 @@ def draw_settings_window(state: AppState):
 
     # Footer hint
     if settings.editing_item >= 0:
-        hint = "Enter: Save | Esc: Cancel"
+        hint = "Enter: Сохранить | Esc: Отмена"
     else:
-        hint = "Click value to edit | Esc: Close"
-    RL_DrawText(hint, win_x + 20, win_y + win_h - 25, 12, RL_Color(120, 120, 120, 255))
+        hint = "Клик по значению для редактирования | Esc: Закрыть"
+    if state.unicode_font:
+        try:
+            rl.DrawTextEx(state.unicode_font, hint.encode('utf-8'),
+                          RL_V2(win_x + 20, win_y + win_h - 25), 12, 1.0, RL_Color(120, 120, 120, 255))
+        except Exception:
+            RL_DrawText(hint, win_x + 20, win_y + win_h - 25, 12, RL_Color(120, 120, 120, 255))
+    else:
+        RL_DrawText(hint, win_x + 20, win_y + win_h - 25, 12, RL_Color(120, 120, 120, 255))
 
 
 def delete_to_recycle_bin(file_path: str) -> bool:

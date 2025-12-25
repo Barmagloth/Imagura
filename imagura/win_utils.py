@@ -98,8 +98,8 @@ class WinBlur:
             return False
 
     @staticmethod
-    def _extend_frame_into_client(hwnd: int) -> bool:
-        """Extend window frame into client area (needed for some effects)."""
+    def _extend_frame_into_client(hwnd: int, extend: bool = True) -> bool:
+        """Extend or reset window frame into client area."""
         if sys.platform != 'win32':
             return False
         try:
@@ -113,7 +113,10 @@ class WinBlur:
                     ("cyBottomHeight", ctypes.c_int),
                 ]
 
-            margins = MARGINS(-1, -1, -1, -1)  # Extend to entire window
+            if extend:
+                margins = MARGINS(-1, -1, -1, -1)  # Extend to entire window
+            else:
+                margins = MARGINS(0, 0, 0, 0)  # Reset to normal
             res = dwmapi.DwmExtendFrameIntoClientArea(
                 ctypes.c_void_p(hwnd),
                 ctypes.byref(margins)
@@ -206,6 +209,9 @@ class WinBlur:
         """Disable blur effect on window."""
         if not hwnd:
             return
+        # Reset frame extension
+        cls._extend_frame_into_client(hwnd, extend=False)
+        # Disable backdrop
         cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)
         cls._set_legacy_blur(hwnd, False)
 
