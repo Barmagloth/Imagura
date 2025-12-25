@@ -110,14 +110,12 @@ class AsyncImageLoader:
         with self.ui_lock:
             self.ui_events.append(UIEvent(callback, args))
 
-    def poll_ui_events(self, max_events: int = 100, filter_priority: bool = False):
+    def poll_ui_events(self, max_events: int = 100):
         events_to_process = []
         with self.ui_lock:
             count = 0
             while self.ui_events and count < max_events:
                 event = self.ui_events.popleft()
-                if filter_priority:
-                    continue
                 events_to_process.append(event)
                 count += 1
 
@@ -1682,8 +1680,8 @@ def delete_current_image(state: AppState) -> bool:
     # Load new current image
     preload_neighbors(state, state.index, skip_neighbors=False)
 
-    # Update gallery center
-    state.gallery_target_center = float(state.index)
+    # Update gallery center - reset target and jump to new index
+    state.gallery_target_index = None
     state.gallery_center_index = float(state.index)
     schedule_thumbs(state, state.index)
 
@@ -2384,9 +2382,9 @@ def main():
     try:
         while True:
             if state.open_anim_active:
-                state.async_loader.poll_ui_events(max_events=2, filter_priority=False)
+                state.async_loader.poll_ui_events(max_events=2)
             else:
-                state.async_loader.poll_ui_events(max_events=100, filter_priority=False)
+                state.async_loader.poll_ui_events(max_events=100)
 
             if not font_loaded and state.cache.curr and first_render_done and not state.open_anim_active:
                 state.unicode_font = load_unicode_font()
