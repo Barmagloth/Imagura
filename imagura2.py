@@ -1263,32 +1263,99 @@ def handle_settings_input(state: AppState) -> bool:
             settings.hide()
             return True
 
+    # Helper to save current editing value
+    def save_current_edit() -> bool:
+        """Save current edit value. Returns True if successful."""
+        if settings.editing_item < 0:
+            return True
+        editable_idx = 0
+        for item in SETTINGS_ITEMS:
+            if item[1] is not None:  # Not a header
+                if editable_idx == settings.editing_item:
+                    label, config_key, val_type, min_val, max_val = item
+                    is_valid, parsed_val, error = validate_settings_value(
+                        settings.edit_value, val_type, min_val, max_val
+                    )
+                    if is_valid:
+                        save_config_value(config_key, parsed_val, val_type)
+                        return True
+                    else:
+                        log(f"[SETTINGS] Validation failed: {error}")
+                        return False
+                editable_idx += 1
+        return True
+
+    # Count total editable items
+    total_editable = sum(1 for item in SETTINGS_ITEMS if item[1] is not None)
+
     # Handle editing mode
     if settings.editing_item >= 0:
-        # Click outside edit field cancels editing
+        # Click handling - save current and possibly switch to another field
         if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-            # Calculate position of currently editing field
             item_y = win_y + 50
             item_h = 28
             val_x = win_x + win_w - 110
             val_w = 100
 
+            # Find which field was clicked (if any)
+            clicked_field = -1
             editable_idx = 0
-            edit_field_y = item_y
             for item in SETTINGS_ITEMS:
-                if item[1] is not None:  # Not a header
-                    if editable_idx == settings.editing_item:
-                        edit_field_y = item_y
+                if item[1] is not None:  # Editable item
+                    if (val_x - 5 <= mouse.x <= val_x + val_w + 5 and
+                        item_y <= mouse.y <= item_y + item_h):
+                        clicked_field = editable_idx
                         break
                     editable_idx += 1
                 item_y += item_h
 
-            # Check if click is outside the edit field
-            if not (val_x - 5 <= mouse.x <= val_x + val_w + 5 and
-                    edit_field_y <= mouse.y <= edit_field_y + item_h):
-                settings.editing_item = -1
-                settings.edit_value = ""
+            if clicked_field == settings.editing_item:
+                # Clicked on same field - do nothing
+                pass
+            elif clicked_field >= 0:
+                # Clicked on another field - save current and switch
+                if save_current_edit():
+                    import imagura.config as cfg
+                    # Find the config key for clicked field
+                    editable_idx = 0
+                    for item in SETTINGS_ITEMS:
+                        if item[1] is not None:
+                            if editable_idx == clicked_field:
+                                current_val = getattr(cfg, item[1], 0)
+                                settings.editing_item = clicked_field
+                                settings.edit_value = str(current_val)
+                                break
+                            editable_idx += 1
                 return True
+            else:
+                # Clicked outside any field - save and exit editing
+                if save_current_edit():
+                    settings.editing_item = -1
+                    settings.edit_value = ""
+                return True
+
+        # Tab - save and move to next field
+        if rl.IsKeyPressed(rl.KEY_TAB):
+            if save_current_edit():
+                import imagura.config as cfg
+                if rl.IsKeyDown(rl.KEY_LEFT_SHIFT) or rl.IsKeyDown(rl.KEY_RIGHT_SHIFT):
+                    # Shift+Tab - previous field
+                    new_idx = (settings.editing_item - 1) % total_editable
+                else:
+                    # Tab - next field
+                    new_idx = (settings.editing_item + 1) % total_editable
+
+                # Find config key for new field
+                editable_idx = 0
+                for item in SETTINGS_ITEMS:
+                    if item[1] is not None:
+                        if editable_idx == new_idx:
+                            current_val = getattr(cfg, item[1], 0)
+                            settings.editing_item = new_idx
+                            settings.edit_value = str(current_val)
+                            break
+                        editable_idx += 1
+            return True
 
         # Get key input
         key = rl.GetCharPressed()
@@ -1302,28 +1369,14 @@ def handle_settings_input(state: AppState) -> bool:
         if rl.IsKeyPressed(rl.KEY_BACKSPACE) and len(settings.edit_value) > 0:
             settings.edit_value = settings.edit_value[:-1]
 
-        # Enter - save value
+        # Enter - save value and exit editing
         if rl.IsKeyPressed(rl.KEY_ENTER):
-            # Find the item being edited
-            editable_idx = 0
-            for item in SETTINGS_ITEMS:
-                if item[1] is not None:  # Not a header
-                    if editable_idx == settings.editing_item:
-                        label, config_key, val_type, min_val, max_val = item
-                        is_valid, parsed_val, error = validate_settings_value(
-                            settings.edit_value, val_type, min_val, max_val
-                        )
-                        if is_valid:
-                            save_config_value(config_key, parsed_val, val_type)
-                            settings.editing_item = -1
-                            settings.edit_value = ""
-                        else:
-                            log(f"[SETTINGS] Validation failed: {error}")
-                        break
-                    editable_idx += 1
+            if save_current_edit():
+                settings.editing_item = -1
+                settings.edit_value = ""
             return True
 
-        # Escape - cancel editing
+        # Escape - cancel editing (don't save)
         if rl.IsKeyPressed(rl.KEY_ESCAPE):
             settings.editing_item = -1
             settings.edit_value = ""
