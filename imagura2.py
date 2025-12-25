@@ -1717,6 +1717,10 @@ def reload_current_image(state: AppState):
             except Exception:
                 pass
 
+    # Schedule thumbnail reload
+    if path not in state.thumb_queue:
+        state.thumb_queue.append(path)
+
     # Reload
     preload_neighbors(state, state.index, skip_neighbors=True)
 
