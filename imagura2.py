@@ -1278,6 +1278,14 @@ def handle_settings_input(state: AppState) -> bool:
                     )
                     if is_valid:
                         save_config_value(config_key, parsed_val, val_type)
+                        # Reload font if font size changed
+                        if config_key == "FONT_SIZE":
+                            new_font = load_unicode_font(int(parsed_val))
+                            if new_font:
+                                if state.unicode_font:
+                                    rl.UnloadFont(state.unicode_font)
+                                state.unicode_font = new_font
+                                log(f"[SETTINGS] Font reloaded with size {parsed_val}")
                         return True
                     else:
                         log(f"[SETTINGS] Validation failed: {error}")
