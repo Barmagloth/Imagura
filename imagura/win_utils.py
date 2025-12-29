@@ -79,6 +79,9 @@ class WinBlur:
     DWMSBT_TRANSIENTWINDOW = 3  # Acrylic
     DWMSBT_TABBEDWINDOW = 4    # Tabbed Mica
 
+    # Track which method succeeded
+    _active_method: Optional[str] = None
+
     @staticmethod
     def _set_window_attribute(hwnd: int, attr: int, value: int) -> bool:
         """Set a DWM window attribute."""
@@ -126,8 +129,40 @@ class WinBlur:
             return False
 
     @staticmethod
-    def _set_legacy_blur(hwnd: int, enabled: bool) -> bool:
-        """Set Windows 10 style blur behind using SetWindowCompositionAttribute."""
+    def _enable_blur_behind(hwnd: int, enable: bool) -> bool:
+        """Use DwmEnableBlurBehindWindow (works on Win10/11)."""
+        if sys.platform != 'win32':
+            return False
+        try:
+            dwmapi = ctypes.windll.dwmapi
+
+            class DWM_BLURBEHIND(ctypes.Structure):
+                _fields_ = [
+                    ("dwFlags", ctypes.c_uint),
+                    ("fEnable", ctypes.c_int),
+                    ("hRgnBlur", ctypes.c_void_p),
+                    ("fTransitionOnMaximized", ctypes.c_int),
+                ]
+
+            DWM_BB_ENABLE = 0x00000001
+
+            bb = DWM_BLURBEHIND()
+            bb.dwFlags = DWM_BB_ENABLE
+            bb.fEnable = 1 if enable else 0
+            bb.hRgnBlur = None
+            bb.fTransitionOnMaximized = 0
+
+            res = dwmapi.DwmEnableBlurBehindWindow(
+                ctypes.c_void_p(hwnd),
+                ctypes.byref(bb)
+            )
+            return res == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    def _set_composition_attribute(hwnd: int, enabled: bool) -> bool:
+        """Set Windows 10/11 acrylic blur using SetWindowCompositionAttribute."""
         if sys.platform != 'win32':
             return False
         try:
@@ -149,18 +184,18 @@ class WinBlur:
                 ]
 
             WCA_ACCENT_POLICY = 19
-            # Accent states
             ACCENT_DISABLED = 0
             ACCENT_ENABLE_BLURBEHIND = 3
             ACCENT_ENABLE_ACRYLICBLURBEHIND = 4  # Windows 10 1803+
 
             accent = ACCENT_POLICY()
             if enabled:
-                # Try acrylic first (better effect), fall back to blur
                 accent.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND
+                # AccentFlags: 2 = draw left border, use for enabling blur
                 accent.AccentFlags = 2
-                # Semi-transparent background color (ABGR format)
-                accent.GradientColor = 0x80000000  # 50% black
+                # GradientColor in ABGR format - use very transparent
+                # 0x01000000 = nearly transparent black (alpha=1)
+                accent.GradientColor = 0x01000000
             else:
                 accent.AccentState = ACCENT_DISABLED
                 accent.AccentFlags = 0
@@ -171,11 +206,10 @@ class WinBlur:
             data.Data = ctypes.addressof(accent)
             data.SizeOfData = ctypes.sizeof(accent)
 
-            # Get function (may not exist on older Windows)
             SetWindowCompositionAttribute = getattr(user32, 'SetWindowCompositionAttribute', None)
             if SetWindowCompositionAttribute:
-                SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
-                return True
+                result = SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
+                return result != 0
             return False
         except Exception:
             return False
@@ -186,34 +220,50 @@ class WinBlur:
         if not hwnd:
             return
 
-        # First, extend frame into client area
-        cls._extend_frame_into_client(hwnd)
+        cls._active_method = None
 
-        # Try Windows 11 22H2+ Acrylic (most compatible for transparent effect)
+        # Step 1: Extend frame into client area (required for transparency)
+        cls._extend_frame_into_client(hwnd, True)
+
+        # Step 2: Try SetWindowCompositionAttribute first (most reliable)
+        if cls._set_composition_attribute(hwnd, True):
+            cls._active_method = "composition"
+            return
+
+        # Step 3: Try DwmEnableBlurBehindWindow
+        if cls._enable_blur_behind(hwnd, True):
+            cls._active_method = "blur_behind"
+            return
+
+        # Step 4: Try Windows 11 backdrop types
         if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW):
+            cls._active_method = "backdrop_acrylic"
             return
 
-        # Try Windows 11 Mica
         if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_MAINWINDOW):
+            cls._active_method = "backdrop_mica"
             return
 
-        # Try undocumented Mica effect (older Win11 builds)
+        # Step 5: Try undocumented Mica (older Win11)
         if cls._set_window_attribute(hwnd, cls.DWMWA_MICA_EFFECT, 1):
+            cls._active_method = "mica_undoc"
             return
-
-        # Fallback to Windows 10 style blur/acrylic
-        cls._set_legacy_blur(hwnd, True)
 
     @classmethod
     def disable(cls, hwnd: Optional[int]) -> None:
         """Disable blur effect on window."""
         if not hwnd:
             return
+
+        # Disable based on what method was used
+        cls._set_composition_attribute(hwnd, False)
+        cls._enable_blur_behind(hwnd, False)
+        cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)
+        cls._set_window_attribute(hwnd, cls.DWMWA_MICA_EFFECT, 0)
+
         # Reset frame extension
         cls._extend_frame_into_client(hwnd, extend=False)
-        # Disable backdrop
-        cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)
-        cls._set_legacy_blur(hwnd, False)
+        cls._active_method = None
 
 
 def get_window_handle_from_raylib() -> Optional[int]:
