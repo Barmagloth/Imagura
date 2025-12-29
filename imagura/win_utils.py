@@ -207,23 +207,22 @@ class WinBlur:
 
         # Windows 11 (build 22000+)
         if build >= 22000:
-            # Try host backdrop first (uses system's backdrop)
+            # Method 1: Set backdrop type first, then acrylic composition
+            # This combination gives blur + transparency on Win11
+            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
+
+            # Acrylic with very transparent tint for blur effect
+            if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000):
+                cls._active_method = "win11_acrylic"
+                return
+
+            # Fallback: host backdrop (transparency without blur)
             if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_HOSTBACKDROP, 0):
                 cls._active_method = "host_backdrop"
                 return
 
-            # Try DWMWA_SYSTEMBACKDROP_TYPE
-            if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW):
-                cls._active_method = "backdrop_acrylic"
-                return
-
-            # Try basic blur behind with transparent color
-            if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_BLURBEHIND, 0x00000000):
-                cls._active_method = "blur_behind"
-                return
-
         # Windows 10 or fallback
-        # Acrylic with semi-transparent dark tint
+        # Acrylic with semi-transparent dark tint (60% opacity)
         if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000):
             cls._active_method = "acrylic"
             return
