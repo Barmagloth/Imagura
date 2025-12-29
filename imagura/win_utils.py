@@ -83,6 +83,21 @@ class WinBlur:
     _active_method: Optional[str] = None
 
     @staticmethod
+    def _get_windows_build() -> int:
+        """Get Windows build number."""
+        if sys.platform != 'win32':
+            return 0
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                 r"SOFTWARE\Microsoft\Windows NT\CurrentVersion")
+            build = winreg.QueryValueEx(key, "CurrentBuildNumber")[0]
+            winreg.CloseKey(key)
+            return int(build)
+        except Exception:
+            return 0
+
+    @staticmethod
     def _set_window_attribute(hwnd: int, attr: int, value: int) -> bool:
         """Set a DWM window attribute."""
         if sys.platform != 'win32':
@@ -129,40 +144,8 @@ class WinBlur:
             return False
 
     @staticmethod
-    def _enable_blur_behind(hwnd: int, enable: bool) -> bool:
-        """Use DwmEnableBlurBehindWindow (works on Win10/11)."""
-        if sys.platform != 'win32':
-            return False
-        try:
-            dwmapi = ctypes.windll.dwmapi
-
-            class DWM_BLURBEHIND(ctypes.Structure):
-                _fields_ = [
-                    ("dwFlags", ctypes.c_uint),
-                    ("fEnable", ctypes.c_int),
-                    ("hRgnBlur", ctypes.c_void_p),
-                    ("fTransitionOnMaximized", ctypes.c_int),
-                ]
-
-            DWM_BB_ENABLE = 0x00000001
-
-            bb = DWM_BLURBEHIND()
-            bb.dwFlags = DWM_BB_ENABLE
-            bb.fEnable = 1 if enable else 0
-            bb.hRgnBlur = None
-            bb.fTransitionOnMaximized = 0
-
-            res = dwmapi.DwmEnableBlurBehindWindow(
-                ctypes.c_void_p(hwnd),
-                ctypes.byref(bb)
-            )
-            return res == 0
-        except Exception:
-            return False
-
-    @staticmethod
-    def _set_composition_attribute(hwnd: int, enabled: bool) -> bool:
-        """Set Windows 10/11 acrylic blur using SetWindowCompositionAttribute."""
+    def _set_composition_attribute(hwnd: int, accent_state: int, gradient_color: int = 0) -> bool:
+        """Set Windows composition attribute with specified accent state."""
         if sys.platform != 'win32':
             return False
         try:
@@ -184,22 +167,12 @@ class WinBlur:
                 ]
 
             WCA_ACCENT_POLICY = 19
-            ACCENT_DISABLED = 0
-            ACCENT_ENABLE_BLURBEHIND = 3
-            ACCENT_ENABLE_ACRYLICBLURBEHIND = 4  # Windows 10 1803+
 
             accent = ACCENT_POLICY()
-            if enabled:
-                accent.AccentState = ACCENT_ENABLE_ACRYLICBLURBEHIND
-                # AccentFlags: 2 = draw left border, use for enabling blur
-                accent.AccentFlags = 2
-                # GradientColor in ABGR format - use very transparent
-                # 0x01000000 = nearly transparent black (alpha=1)
-                accent.GradientColor = 0x01000000
-            else:
-                accent.AccentState = ACCENT_DISABLED
-                accent.AccentFlags = 0
-                accent.GradientColor = 0
+            accent.AccentState = accent_state
+            accent.AccentFlags = 2 if accent_state != 0 else 0
+            accent.GradientColor = gradient_color
+            accent.AnimationId = 0
 
             data = WINDOWCOMPOSITIONATTRIBDATA()
             data.Attribute = WCA_ACCENT_POLICY
@@ -221,32 +194,43 @@ class WinBlur:
             return
 
         cls._active_method = None
+        build = cls._get_windows_build()
 
-        # Step 1: Extend frame into client area (required for transparency)
+        # Extend frame into client area (required for all methods)
         cls._extend_frame_into_client(hwnd, True)
 
-        # Step 2: Try SetWindowCompositionAttribute first (most reliable)
-        if cls._set_composition_attribute(hwnd, True):
-            cls._active_method = "composition"
+        # Accent states
+        ACCENT_DISABLED = 0
+        ACCENT_ENABLE_BLURBEHIND = 3        # Basic blur (Win10+)
+        ACCENT_ENABLE_ACRYLICBLURBEHIND = 4  # Acrylic (Win10 1803+)
+        ACCENT_ENABLE_HOSTBACKDROP = 5       # Host backdrop (Win11)
+
+        # Windows 11 (build 22000+)
+        if build >= 22000:
+            # Try host backdrop first (uses system's backdrop)
+            if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_HOSTBACKDROP, 0):
+                cls._active_method = "host_backdrop"
+                return
+
+            # Try DWMWA_SYSTEMBACKDROP_TYPE
+            if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW):
+                cls._active_method = "backdrop_acrylic"
+                return
+
+            # Try basic blur behind with transparent color
+            if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_BLURBEHIND, 0x00000000):
+                cls._active_method = "blur_behind"
+                return
+
+        # Windows 10 or fallback
+        # Acrylic with semi-transparent dark tint
+        if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000):
+            cls._active_method = "acrylic"
             return
 
-        # Step 3: Try DwmEnableBlurBehindWindow
-        if cls._enable_blur_behind(hwnd, True):
-            cls._active_method = "blur_behind"
-            return
-
-        # Step 4: Try Windows 11 backdrop types
-        if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW):
-            cls._active_method = "backdrop_acrylic"
-            return
-
-        if cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_MAINWINDOW):
-            cls._active_method = "backdrop_mica"
-            return
-
-        # Step 5: Try undocumented Mica (older Win11)
-        if cls._set_window_attribute(hwnd, cls.DWMWA_MICA_EFFECT, 1):
-            cls._active_method = "mica_undoc"
+        # Basic blur
+        if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_BLURBEHIND, 0x00000000):
+            cls._active_method = "blur"
             return
 
     @classmethod
@@ -255,11 +239,13 @@ class WinBlur:
         if not hwnd:
             return
 
-        # Disable based on what method was used
-        cls._set_composition_attribute(hwnd, False)
-        cls._enable_blur_behind(hwnd, False)
+        ACCENT_DISABLED = 0
+
+        # Disable composition attribute
+        cls._set_composition_attribute(hwnd, ACCENT_DISABLED, 0)
+
+        # Disable backdrop
         cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)
-        cls._set_window_attribute(hwnd, cls.DWMWA_MICA_EFFECT, 0)
 
         # Reset frame extension
         cls._extend_frame_into_client(hwnd, extend=False)
