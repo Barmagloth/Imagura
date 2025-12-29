@@ -384,8 +384,10 @@ def update_zoom_animation(state: AppState):
 def win_set_blur(hwnd, enabled: bool):
     if enabled:
         WinBlur.enable(hwnd)
+        log(f"[BLUR] Enabled using method: {WinBlur._active_method}")
     else:
         WinBlur.disable(hwnd)
+        log("[BLUR] Disabled")
 
 
 # Track current blur state to avoid calling DWM APIs every frame
