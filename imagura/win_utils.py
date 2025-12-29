@@ -187,6 +187,80 @@ class WinBlur:
         except Exception:
             return False
 
+    # Accent states as class constants for testing
+    ACCENT_DISABLED = 0
+    ACCENT_ENABLE_GRADIENT = 1
+    ACCENT_ENABLE_TRANSPARENTGRADIENT = 2
+    ACCENT_ENABLE_BLURBEHIND = 3
+    ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
+    ACCENT_ENABLE_HOSTBACKDROP = 5
+
+    @classmethod
+    def test_mode(cls, hwnd: Optional[int], mode: int) -> str:
+        """Test different blur/transparency modes. Returns description."""
+        if not hwnd:
+            return "No hwnd"
+
+        # First disable everything
+        cls._set_composition_attribute(hwnd, cls.ACCENT_DISABLED, 0)
+        cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)
+
+        descriptions = {
+            0: "All disabled",
+            1: "ExtendFrame only",
+            2: "ACCENT_ENABLE_BLURBEHIND (3)",
+            3: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) transparent",
+            4: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) dark tint",
+            5: "ACCENT_ENABLE_HOSTBACKDROP (5)",
+            6: "DWMSBT_TRANSIENTWINDOW (acrylic backdrop)",
+            7: "DWMSBT_MAINWINDOW (mica backdrop)",
+            8: "Backdrop + BLURBEHIND combo",
+            9: "Backdrop + HOSTBACKDROP combo",
+        }
+
+        if mode == 0:
+            cls._extend_frame_into_client(hwnd, False)
+            cls._active_method = None
+        elif mode == 1:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._active_method = "extend_frame"
+        elif mode == 2:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000)
+            cls._active_method = "blur_behind"
+        elif mode == 3:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000)
+            cls._active_method = "acrylic_transparent"
+        elif mode == 4:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000)
+            cls._active_method = "acrylic_dark"
+        elif mode == 5:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
+            cls._active_method = "host_backdrop"
+        elif mode == 6:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
+            cls._active_method = "backdrop_acrylic"
+        elif mode == 7:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_MAINWINDOW)
+            cls._active_method = "backdrop_mica"
+        elif mode == 8:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000)
+            cls._active_method = "backdrop+blur"
+        elif mode == 9:
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
+            cls._active_method = "backdrop+host"
+
+        return descriptions.get(mode, f"Unknown mode {mode}")
+
     @classmethod
     def enable(cls, hwnd: Optional[int]) -> None:
         """Enable blur/transparency effect on window."""
@@ -199,36 +273,21 @@ class WinBlur:
         # Extend frame into client area (required for all methods)
         cls._extend_frame_into_client(hwnd, True)
 
-        # Accent states
-        ACCENT_DISABLED = 0
-        ACCENT_ENABLE_BLURBEHIND = 3        # Basic blur (Win10+)
-        ACCENT_ENABLE_ACRYLICBLURBEHIND = 4  # Acrylic (Win10 1803+)
-        ACCENT_ENABLE_HOSTBACKDROP = 5       # Host backdrop (Win11)
-
         # Windows 11 (build 22000+)
         if build >= 22000:
-            # Method 1: Set backdrop type first, then acrylic composition
-            # This combination gives blur + transparency on Win11
-            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
-
-            # Acrylic with very transparent tint for blur effect
-            if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000):
-                cls._active_method = "win11_acrylic"
-                return
-
-            # Fallback: host backdrop (transparency without blur)
-            if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_HOSTBACKDROP, 0):
+            # Try host backdrop (gives transparency on Win11)
+            if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0):
                 cls._active_method = "host_backdrop"
                 return
 
         # Windows 10 or fallback
         # Acrylic with semi-transparent dark tint (60% opacity)
-        if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000):
+        if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000):
             cls._active_method = "acrylic"
             return
 
         # Basic blur
-        if cls._set_composition_attribute(hwnd, ACCENT_ENABLE_BLURBEHIND, 0x00000000):
+        if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000):
             cls._active_method = "blur"
             return
 
@@ -238,10 +297,8 @@ class WinBlur:
         if not hwnd:
             return
 
-        ACCENT_DISABLED = 0
-
         # Disable composition attribute
-        cls._set_composition_attribute(hwnd, ACCENT_DISABLED, 0)
+        cls._set_composition_attribute(hwnd, cls.ACCENT_DISABLED, 0)
 
         # Disable backdrop
         cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)

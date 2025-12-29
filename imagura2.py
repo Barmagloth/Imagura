@@ -2520,6 +2520,12 @@ def main():
                 state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
                 state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
 
+            # TEST KEYS for blur modes (0-9)
+            for test_key in range(10):
+                if rl.IsKeyPressed(rl.KEY_ZERO + test_key):
+                    desc = WinBlur.test_mode(state.hwnd, test_key)
+                    log(f"[BLUR_TEST] Mode {test_key}: {desc} -> method={WinBlur._active_method}")
+
             # DEL key - delete image to recycle bin
             if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active:
                 if delete_current_image(state):
