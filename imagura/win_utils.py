@@ -158,7 +158,7 @@ class WinBlur:
             return False
 
     @staticmethod
-    def _set_composition_attribute(hwnd: int, accent_state: int, gradient_color: int = 0) -> bool:
+    def _set_composition_attribute(hwnd: int, accent_state: int, gradient_color: int = 0, accent_flags: int = 2) -> bool:
         """Set Windows composition attribute with specified accent state."""
         if sys.platform != 'win32':
             return False
@@ -184,7 +184,7 @@ class WinBlur:
 
             accent = ACCENT_POLICY()
             accent.AccentState = accent_state
-            accent.AccentFlags = 2 if accent_state != 0 else 0
+            accent.AccentFlags = accent_flags if accent_state != 0 else 0
             accent.GradientColor = gradient_color
             accent.AnimationId = 0
 
@@ -198,6 +198,39 @@ class WinBlur:
                 result = SetWindowCompositionAttribute(ctypes.c_void_p(hwnd), ctypes.byref(data))
                 return result != 0
             return False
+        except Exception:
+            return False
+
+    @staticmethod
+    def _enable_blur_behind(hwnd: int, enable: bool = True) -> bool:
+        """Enable blur behind window using DwmEnableBlurBehindWindow (Vista/7 API)."""
+        if sys.platform != 'win32':
+            return False
+        try:
+            dwmapi = ctypes.windll.dwmapi
+
+            class DWM_BLURBEHIND(ctypes.Structure):
+                _fields_ = [
+                    ("dwFlags", ctypes.c_uint),
+                    ("fEnable", ctypes.c_int),
+                    ("hRgnBlur", ctypes.c_void_p),
+                    ("fTransitionOnMaximized", ctypes.c_int),
+                ]
+
+            DWM_BB_ENABLE = 0x00000001
+            DWM_BB_BLURREGION = 0x00000002
+
+            bb = DWM_BLURBEHIND()
+            bb.dwFlags = DWM_BB_ENABLE
+            bb.fEnable = 1 if enable else 0
+            bb.hRgnBlur = None
+            bb.fTransitionOnMaximized = 0
+
+            res = dwmapi.DwmEnableBlurBehindWindow(
+                ctypes.c_void_p(hwnd),
+                ctypes.byref(bb)
+            )
+            return res == 0
         except Exception:
             return False
 
@@ -224,64 +257,72 @@ class WinBlur:
 
         descriptions = {
             0: "All disabled",
-            1: "ExtendFrame only",
-            2: "ACCENT_ENABLE_BLURBEHIND (3)",
-            3: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) transparent",
-            4: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) dark tint",
-            5: "ACCENT_ENABLE_HOSTBACKDROP (5)",
-            6: "DarkMode + TRANSIENTWINDOW (no NOREDIRECT)",
-            7: "DarkMode + MAINWINDOW (mica, no NOREDIRECT)",
-            8: "DarkMode + HOSTBACKDROP + TRANSIENTWINDOW",
-            9: "HOSTBACKDROP + DarkMode + ExtendFrame",
+            1: "DwmEnableBlurBehindWindow (Vista API)",
+            2: "BLURBEHIND + DwmBlur combo",
+            3: "ACRYLICBLURBEHIND flags=0",
+            4: "ACRYLICBLURBEHIND flags=1",
+            5: "HOSTBACKDROP (transparency)",
+            6: "HOSTBACKDROP + DwmBlur",
+            7: "HOSTBACKDROP + ACRYLICBLURBEHIND",
+            8: "DwmBlur + ACRYLICBLURBEHIND",
+            9: "Full combo: DwmBlur + HOSTBACKDROP + ACRYLIC",
         }
 
         if mode == 0:
             cls._extend_frame_into_client(hwnd, False)
+            cls._enable_blur_behind(hwnd, False)
             cls._active_method = None
         elif mode == 1:
+            # Vista/7 blur API
             cls._extend_frame_into_client(hwnd, True)
-            cls._active_method = "extend_frame"
+            cls._enable_blur_behind(hwnd, True)
+            cls._active_method = "dwm_blur"
         elif mode == 2:
+            # BLURBEHIND + DwmEnableBlurBehindWindow
             cls._extend_frame_into_client(hwnd, True)
+            cls._enable_blur_behind(hwnd, True)
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000)
-            cls._active_method = "blur_behind"
+            cls._active_method = "blur+dwmblur"
         elif mode == 3:
+            # ACRYLICBLURBEHIND with AccentFlags=0
             cls._extend_frame_into_client(hwnd, True)
-            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000)
-            cls._active_method = "acrylic_transparent"
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000, accent_flags=0)
+            cls._active_method = "acrylic_flags0"
         elif mode == 4:
+            # ACRYLICBLURBEHIND with AccentFlags=1
             cls._extend_frame_into_client(hwnd, True)
-            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000)
-            cls._active_method = "acrylic_dark"
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000, accent_flags=1)
+            cls._active_method = "acrylic_flags1"
         elif mode == 5:
+            # HOSTBACKDROP only (gives transparency)
             cls._extend_frame_into_client(hwnd, True)
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
             cls._active_method = "host_backdrop"
         elif mode == 6:
-            # Dark mode + TRANSIENTWINDOW (Acrylic) without NOREDIRECT
-            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+            # HOSTBACKDROP + DwmEnableBlurBehindWindow
             cls._extend_frame_into_client(hwnd, True)
-            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
-            cls._active_method = "darkmode_acrylic"
+            cls._enable_blur_behind(hwnd, True)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
+            cls._active_method = "host+dwmblur"
         elif mode == 7:
-            # Dark mode + MAINWINDOW (Mica) without NOREDIRECT
-            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+            # HOSTBACKDROP then ACRYLICBLURBEHIND
             cls._extend_frame_into_client(hwnd, True)
-            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_MAINWINDOW)
-            cls._active_method = "darkmode_mica"
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000)
+            cls._active_method = "host+acrylic"
         elif mode == 8:
-            # Combination: HOSTBACKDROP + dark mode + TRANSIENTWINDOW
-            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+            # DwmBlur + ACRYLICBLURBEHIND
             cls._extend_frame_into_client(hwnd, True)
-            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
-            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
-            cls._active_method = "host+dark+acrylic"
+            cls._enable_blur_behind(hwnd, True)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000)
+            cls._active_method = "dwmblur+acrylic"
         elif mode == 9:
-            # HOSTBACKDROP with dark mode (transparency + try blur)
+            # Full combo
             cls._extend_frame_into_client(hwnd, True)
-            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+            cls._enable_blur_behind(hwnd, True)
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
-            cls._active_method = "host+darkmode"
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x01000000)
+            cls._active_method = "full_combo"
 
         return descriptions.get(mode, f"Unknown mode {mode}")
 
