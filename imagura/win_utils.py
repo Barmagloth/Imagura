@@ -98,6 +98,20 @@ class WinBlur:
             return 0
 
     @staticmethod
+    def _set_window_ex_style(hwnd: int, add_style: int) -> bool:
+        """Add extended window style."""
+        if sys.platform != 'win32':
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            GWL_EXSTYLE = -20
+            current = user32.GetWindowLongW(ctypes.c_void_p(hwnd), GWL_EXSTYLE)
+            user32.SetWindowLongW(ctypes.c_void_p(hwnd), GWL_EXSTYLE, current | add_style)
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def _set_window_attribute(hwnd: int, attr: int, value: int) -> bool:
         """Set a DWM window attribute."""
         if sys.platform != 'win32':
@@ -205,6 +219,9 @@ class WinBlur:
         cls._set_composition_attribute(hwnd, cls.ACCENT_DISABLED, 0)
         cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_NONE)
 
+        # WS_EX_NOREDIRECTIONBITMAP - required for some backdrop effects
+        WS_EX_NOREDIRECTIONBITMAP = 0x00200000
+
         descriptions = {
             0: "All disabled",
             1: "ExtendFrame only",
@@ -212,10 +229,10 @@ class WinBlur:
             3: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) transparent",
             4: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) dark tint",
             5: "ACCENT_ENABLE_HOSTBACKDROP (5)",
-            6: "DWMSBT_TRANSIENTWINDOW (acrylic backdrop)",
-            7: "DWMSBT_MAINWINDOW (mica backdrop)",
-            8: "Backdrop + BLURBEHIND combo",
-            9: "Backdrop + HOSTBACKDROP combo",
+            6: "NOREDIRECT + TRANSIENTWINDOW (acrylic)",
+            7: "NOREDIRECT + MAINWINDOW (mica)",
+            8: "NOREDIRECT + Backdrop + BLURBEHIND",
+            9: "NOREDIRECT + Backdrop + HOSTBACKDROP",
         }
 
         if mode == 0:
@@ -241,23 +258,28 @@ class WinBlur:
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
             cls._active_method = "host_backdrop"
         elif mode == 6:
+            # Try with WS_EX_NOREDIRECTIONBITMAP for proper backdrop
+            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
             cls._extend_frame_into_client(hwnd, True)
             cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
-            cls._active_method = "backdrop_acrylic"
+            cls._active_method = "noredirect_acrylic"
         elif mode == 7:
+            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
             cls._extend_frame_into_client(hwnd, True)
             cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_MAINWINDOW)
-            cls._active_method = "backdrop_mica"
+            cls._active_method = "noredirect_mica"
         elif mode == 8:
+            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
             cls._extend_frame_into_client(hwnd, True)
             cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000)
-            cls._active_method = "backdrop+blur"
+            cls._active_method = "noredirect+blur"
         elif mode == 9:
+            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
             cls._extend_frame_into_client(hwnd, True)
             cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
-            cls._active_method = "backdrop+host"
+            cls._active_method = "noredirect+host"
 
         return descriptions.get(mode, f"Unknown mode {mode}")
 
