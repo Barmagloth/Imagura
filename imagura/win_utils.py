@@ -229,10 +229,10 @@ class WinBlur:
             3: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) transparent",
             4: "ACCENT_ENABLE_ACRYLICBLURBEHIND (4) dark tint",
             5: "ACCENT_ENABLE_HOSTBACKDROP (5)",
-            6: "NOREDIRECT + TRANSIENTWINDOW (acrylic)",
-            7: "NOREDIRECT + MAINWINDOW (mica)",
-            8: "NOREDIRECT + Backdrop + BLURBEHIND",
-            9: "NOREDIRECT + Backdrop + HOSTBACKDROP",
+            6: "DarkMode + TRANSIENTWINDOW (no NOREDIRECT)",
+            7: "DarkMode + MAINWINDOW (mica, no NOREDIRECT)",
+            8: "DarkMode + HOSTBACKDROP + TRANSIENTWINDOW",
+            9: "HOSTBACKDROP + DarkMode + ExtendFrame",
         }
 
         if mode == 0:
@@ -258,28 +258,30 @@ class WinBlur:
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
             cls._active_method = "host_backdrop"
         elif mode == 6:
-            # Try with WS_EX_NOREDIRECTIONBITMAP for proper backdrop
-            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
+            # Dark mode + TRANSIENTWINDOW (Acrylic) without NOREDIRECT
+            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
             cls._extend_frame_into_client(hwnd, True)
             cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
-            cls._active_method = "noredirect_acrylic"
+            cls._active_method = "darkmode_acrylic"
         elif mode == 7:
-            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
+            # Dark mode + MAINWINDOW (Mica) without NOREDIRECT
+            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
             cls._extend_frame_into_client(hwnd, True)
             cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_MAINWINDOW)
-            cls._active_method = "noredirect_mica"
+            cls._active_method = "darkmode_mica"
         elif mode == 8:
-            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
+            # Combination: HOSTBACKDROP + dark mode + TRANSIENTWINDOW
+            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
             cls._extend_frame_into_client(hwnd, True)
-            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
-            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000)
-            cls._active_method = "noredirect+blur"
-        elif mode == 9:
-            cls._set_window_ex_style(hwnd, WS_EX_NOREDIRECTIONBITMAP)
-            cls._extend_frame_into_client(hwnd, True)
-            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
             cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
-            cls._active_method = "noredirect+host"
+            cls._set_window_attribute(hwnd, cls.DWMWA_SYSTEMBACKDROP_TYPE, cls.DWMSBT_TRANSIENTWINDOW)
+            cls._active_method = "host+dark+acrylic"
+        elif mode == 9:
+            # HOSTBACKDROP with dark mode (transparency + try blur)
+            cls._extend_frame_into_client(hwnd, True)
+            cls._set_window_attribute(hwnd, cls.DWMWA_USE_IMMERSIVE_DARK_MODE, 1)
+            cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0)
+            cls._active_method = "host+darkmode"
 
         return descriptions.get(mode, f"Unknown mode {mode}")
 

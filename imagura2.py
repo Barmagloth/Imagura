@@ -2523,8 +2523,9 @@ def main():
             # TEST KEYS for blur modes (0-9)
             for test_key in range(10):
                 if rl.IsKeyPressed(rl.KEY_ZERO + test_key):
+                    build = WinBlur._get_windows_build()
                     desc = WinBlur.test_mode(state.hwnd, test_key)
-                    log(f"[BLUR_TEST] Mode {test_key}: {desc} -> method={WinBlur._active_method}")
+                    log(f"[BLUR_TEST] Build={build} Mode {test_key}: {desc} -> method={WinBlur._active_method}")
 
             # DEL key - delete image to recycle bin
             if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active:
