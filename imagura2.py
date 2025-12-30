@@ -378,7 +378,8 @@ def update_zoom_animation(state: AppState):
     if t >= 1.0:
         state.zoom_anim_active = False
         if state.cache.curr:
-            state.view = sanitize_view(state, state.zoom_anim_to, state.cache.curr)
+            # Use clamp_pan instead of sanitize_view to preserve pan position
+            state.view = clamp_pan(state.zoom_anim_to, state.cache.curr, state.screenW, state.screenH)
         else:
             state.view = state.zoom_anim_to
         return
