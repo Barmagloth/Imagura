@@ -78,6 +78,14 @@ class AppState:
     def unicode_font(self, value: Optional[Any]):
         self.window.unicode_font = value
 
+    @property
+    def windowed_mode(self) -> bool:
+        return self.window.windowed_mode
+
+    @windowed_mode.setter
+    def windowed_mode(self, value: bool):
+        self.window.windowed_mode = value
+
     # ═══════════════════════════════════════════════════════════════════════
     # Backward-compatible properties - ImageListState
     # ═══════════════════════════════════════════════════════════════════════

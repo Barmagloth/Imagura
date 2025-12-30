@@ -12,6 +12,12 @@ class WindowState:
     screen_h: int = 0
     hwnd: Optional[int] = None
     unicode_font: Optional[Any] = None
+    # Windowed mode support
+    windowed_mode: bool = False
+    fullscreen_x: int = 0
+    fullscreen_y: int = 0
+    fullscreen_w: int = 0
+    fullscreen_h: int = 0
 
     @property
     def size(self) -> Tuple[int, int]:

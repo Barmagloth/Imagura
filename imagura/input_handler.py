@@ -67,7 +67,7 @@ class InputHandler:
     key_prev: List[int] = field(default_factory=lambda: [rl.KEY_LEFT, rl.KEY_A])
     key_zoom_in: int = rl.KEY_UP
     key_zoom_out: int = rl.KEY_DOWN
-    key_toggle_zoom: int = rl.KEY_F
+    key_toggle_zoom: int = rl.KEY_Z
     key_toggle_hud: int = rl.KEY_I
     key_toggle_filename: int = rl.KEY_N
     key_cycle_bg: int = rl.KEY_V

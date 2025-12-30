@@ -45,6 +45,7 @@ from imagura.config import (
     KEY_TOGGLE_HUD, KEY_TOGGLE_FILENAME, KEY_CYCLE_BG, KEY_DELETE_IMAGE,
     KEY_ZOOM_IN, KEY_ZOOM_IN_ALT, KEY_ZOOM_OUT, KEY_ZOOM_OUT_ALT, KEY_TOGGLE_ZOOM,
     KEY_NEXT_IMAGE, KEY_NEXT_IMAGE_ALT, KEY_PREV_IMAGE, KEY_PREV_IMAGE_ALT, KEY_CLOSE,
+    KEY_TOGGLE_WINDOW,
 )
 from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic
 from imagura.rl_compat import (
@@ -248,6 +249,130 @@ def init_window_and_blur(state: AppState):
     state.async_loader = AsyncImageLoader(load_image_cpu_only)
     state.idle_detector = IdleDetector()
     log(f"[INIT] RL_VER={RL_VER} workarea={w}x{h} window={state.screenW}x{state.screenH} hwnd={state.hwnd}")
+
+
+def toggle_window_mode(state: AppState):
+    """Toggle between fullscreen (borderless) and windowed mode.
+
+    In windowed mode:
+    - Window size matches current image size (50%-100% scale)
+    - If image >= screen size, window is maximized
+    - Window has standard decorations (title bar, buttons)
+    """
+    if not state.windowed_mode:
+        # Switch to windowed mode
+        # Save current fullscreen dimensions
+        state.window.fullscreen_x, state.window.fullscreen_y = 0, 0
+        state.window.fullscreen_w = state.screenW
+        state.window.fullscreen_h = state.screenH
+
+        # Calculate window size based on current image
+        if state.cache.curr:
+            img_w, img_h = state.cache.curr.w, state.cache.curr.h
+        else:
+            img_w, img_h = state.screenW // 2, state.screenH // 2
+
+        work_x, work_y, work_w, work_h = get_work_area()
+        if work_w == 0 or work_h == 0:
+            work_w, work_h = state.screenW, state.screenH
+
+        # Calculate scale: at least 50%, at most 100%
+        # If image fits at 100%, use 100%
+        # If image doesn't fit, use max that fits
+        # But never less than 50%
+        scale_w = work_w / img_w if img_w > 0 else 1.0
+        scale_h = work_h / img_h if img_h > 0 else 1.0
+        max_fit_scale = min(scale_w, scale_h)
+
+        if max_fit_scale >= 1.0:
+            # Image fits at 100% scale
+            scale = 1.0
+        elif max_fit_scale >= 0.5:
+            # Image fits between 50% and 100%
+            scale = max_fit_scale
+        else:
+            # Image is too big even at 50%, maximize window
+            scale = max_fit_scale  # Will be < 0.5, window will be work area size
+
+        win_w = int(img_w * scale)
+        win_h = int(img_h * scale)
+
+        # Ensure window doesn't exceed work area
+        win_w = min(win_w, work_w)
+        win_h = min(win_h, work_h)
+
+        # Ensure minimum reasonable size
+        win_w = max(win_w, 200)
+        win_h = max(win_h, 200)
+
+        # Center window on screen
+        win_x = work_x + (work_w - win_w) // 2
+        win_y = work_y + (work_h - win_h) // 2
+
+        # Remove undecorated flag (add window decorations)
+        try:
+            rl.ClearWindowState(rl.FLAG_WINDOW_UNDECORATED)
+        except Exception:
+            pass
+
+        # Set window size and position
+        try:
+            rl.SetWindowSize(win_w, win_h)
+            rl.SetWindowPosition(win_x, win_y)
+        except Exception:
+            pass
+
+        state.windowed_mode = True
+        state.screenW, state.screenH = rl.GetScreenWidth(), rl.GetScreenHeight()
+
+        # Recalculate view for new window size
+        if state.cache.curr:
+            state.view = compute_fit_view(
+                state.cache.curr.w, state.cache.curr.h,
+                state.screenW, state.screenH, FIT_DEFAULT_SCALE
+            )
+
+        # Re-apply blur effect with new hwnd if needed
+        state.hwnd = get_window_handle_from_raylib()
+        WinBlur.enable(state.hwnd)
+
+        log(f"[WINDOW] Switched to windowed mode: {win_w}x{win_h}")
+    else:
+        # Switch back to fullscreen (borderless)
+        # Restore undecorated flag
+        flags = rl.FLAG_WINDOW_UNDECORATED | getattr(rl, 'FLAG_WINDOW_ALWAYS_RUN', 0)
+        try:
+            rl.SetWindowState(flags)
+        except Exception:
+            pass
+
+        # Restore fullscreen size and position
+        work_x, work_y, work_w, work_h = get_work_area()
+        if work_w == 0 or work_h == 0:
+            work_w = state.window.fullscreen_w
+            work_h = state.window.fullscreen_h
+
+        try:
+            rl.SetWindowSize(work_w, work_h)
+            rl.SetWindowPosition(work_x, work_y)
+        except Exception:
+            pass
+
+        state.windowed_mode = False
+        state.screenW, state.screenH = rl.GetScreenWidth(), rl.GetScreenHeight()
+
+        # Recalculate view for restored window size
+        if state.cache.curr:
+            state.view = compute_fit_view(
+                state.cache.curr.w, state.cache.curr.h,
+                state.screenW, state.screenH, FIT_DEFAULT_SCALE
+            )
+
+        # Re-apply blur effect
+        state.hwnd = get_window_handle_from_raylib()
+        WinBlur.enable(state.hwnd)
+
+        log(f"[WINDOW] Switched to fullscreen mode: {work_w}x{work_h}")
 
 
 def _image_resize_mut(img, w: int, h: int):
@@ -558,6 +683,11 @@ def is_point_in_close_button(state: AppState, x: float, y: float) -> bool:
 
 
 def update_close_button_alpha(state: AppState):
+    # In windowed mode, system window buttons are used instead
+    if state.windowed_mode:
+        state.close_btn_alpha = 0.0
+        return
+
     mouse = rl.GetMousePosition()
     cx, cy = get_close_button_pos(state)
 
@@ -583,6 +713,10 @@ def update_close_button_alpha(state: AppState):
 
 
 def draw_close_button(state: AppState):
+    # In windowed mode, system window buttons are used instead
+    if state.windowed_mode:
+        return
+
     if state.close_btn_alpha < 0.01:
         return
 
@@ -610,6 +744,10 @@ def draw_close_button(state: AppState):
 
 
 def check_close_button_click(state: AppState) -> bool:
+    # In windowed mode, system window buttons are used instead
+    if state.windowed_mode:
+        return False
+
     if not rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
         return False
     mouse = rl.GetMousePosition()
@@ -2690,6 +2828,10 @@ def main():
 
             if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
                 start_toggle_zoom_animation(state)
+
+            # Toggle window mode (F key)
+            if rl.IsKeyPressed(KEY_TOGGLE_WINDOW):
+                toggle_window_mode(state)
 
             # Always track clicks for double-click detection, even during animation
             if not_on_edge and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not input_consumed:
