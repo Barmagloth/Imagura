@@ -2700,10 +2700,11 @@ def main():
                 over_img = (
                         img_rect.x <= mouse.x <= img_rect.x + img_rect.width and img_rect.y <= mouse.y <= img_rect.y + img_rect.height)
 
+                # Allow panning in any zoom mode (not just when zoomed)
                 if rl.IsMouseButtonPressed(
-                        rl.MOUSE_BUTTON_LEFT) and state.is_zoomed and over_img and not is_point_in_close_button(state,
-                                                                                                                mouse.x,
-                                                                                                                mouse.y) and not input_consumed:
+                        rl.MOUSE_BUTTON_LEFT) and over_img and not is_point_in_close_button(state,
+                                                                                            mouse.x,
+                                                                                            mouse.y) and not input_consumed:
                     state.is_panning = True
                     state.pan_start_mouse = (mouse.x, mouse.y)
                     state.pan_start_offset = (state.view.offx, state.view.offy)

@@ -88,10 +88,11 @@ def clamp_pan(
     screen_w: int,
     screen_h: int
 ) -> ViewParams:
-    """Clamp view offsets to keep image visible.
+    """Clamp view offsets to keep image within screen bounds.
 
-    If image is smaller than screen, it will be centered.
-    If larger, it will be clamped to prevent empty space.
+    Image edges cannot go beyond screen edges:
+    - For images smaller than screen: can move freely within screen
+    - For images larger than screen: prevents empty space at edges
 
     Args:
         view: Current view parameters.
@@ -108,13 +109,19 @@ def clamp_pan(
     vh = img_h * view.scale
 
     if vw <= screen_w:
-        result.offx = (screen_w - vw) / 2.0
+        # Image smaller than screen: keep within screen bounds
+        # Left edge >= 0, right edge <= screen_w
+        result.offx = clamp(view.offx, 0.0, screen_w - vw)
     else:
+        # Image larger than screen: prevent empty space
+        # Right edge >= screen_w, left edge <= 0
         result.offx = clamp(view.offx, screen_w - vw, 0.0)
 
     if vh <= screen_h:
-        result.offy = (screen_h - vh) / 2.0
+        # Image smaller than screen: keep within screen bounds
+        result.offy = clamp(view.offy, 0.0, screen_h - vh)
     else:
+        # Image larger than screen: prevent empty space
         result.offy = clamp(view.offy, screen_h - vh, 0.0)
 
     return result
