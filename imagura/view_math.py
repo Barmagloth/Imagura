@@ -90,9 +90,11 @@ def clamp_pan(
 ) -> ViewParams:
     """Clamp view offsets to keep image within screen bounds.
 
-    Image edges cannot go beyond screen edges:
-    - For images smaller than screen: can move freely within screen
-    - For images larger than screen: prevents empty space at edges
+    Uses center-based clamping to ensure smooth transitions during zoom:
+    - Tracks image center position relative to screen center
+    - Clamps based on how far the center can move from screen center
+    - For small images: center stays within screen bounds
+    - For large images: center can move far enough to show edges
 
     Args:
         view: Current view parameters.
@@ -108,21 +110,30 @@ def clamp_pan(
     vw = img_w * view.scale
     vh = img_h * view.scale
 
-    if vw <= screen_w:
-        # Image smaller than screen: keep within screen bounds
-        # Left edge >= 0, right edge <= screen_w
-        result.offx = clamp(view.offx, 0.0, screen_w - vw)
-    else:
-        # Image larger than screen: prevent empty space
-        # Right edge >= screen_w, left edge <= 0
-        result.offx = clamp(view.offx, screen_w - vw, 0.0)
+    # Calculate current image center
+    img_center_x = view.offx + vw / 2
+    img_center_y = view.offy + vh / 2
+    screen_center_x = screen_w / 2
+    screen_center_y = screen_h / 2
 
-    if vh <= screen_h:
-        # Image smaller than screen: keep within screen bounds
-        result.offy = clamp(view.offy, 0.0, screen_h - vh)
-    else:
-        # Image larger than screen: prevent empty space
-        result.offy = clamp(view.offy, screen_h - vh, 0.0)
+    # How far can image center deviate from screen center?
+    # For small image: center must stay within [vw/2, screen_w - vw/2]
+    #   => deviation from screen_center: [vw/2 - screen_w/2, screen_w/2 - vw/2]
+    #   => max deviation = (screen_w - vw) / 2
+    # For large image: center can go to [screen_w - vw/2, vw/2] to show edges
+    #   => max deviation = (vw - screen_w) / 2
+
+    # Unified: max deviation = abs(screen_w - vw) / 2
+    max_dev_x = abs(screen_w - vw) / 2
+    max_dev_y = abs(screen_h - vh) / 2
+
+    # Clamp image center position
+    clamped_center_x = clamp(img_center_x, screen_center_x - max_dev_x, screen_center_x + max_dev_x)
+    clamped_center_y = clamp(img_center_y, screen_center_y - max_dev_y, screen_center_y + max_dev_y)
+
+    # Convert back to offset
+    result.offx = clamped_center_x - vw / 2
+    result.offy = clamped_center_y - vh / 2
 
     return result
 
