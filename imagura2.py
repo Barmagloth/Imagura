@@ -14,6 +14,7 @@ from threading import Thread, Lock
 import math
 
 # Import from new modules
+import imagura.config as cfg  # For dynamic access to config values
 from imagura.config import (
     TARGET_FPS, ASYNC_WORKERS,
     ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS, ANIM_TOGGLE_ZOOM_MS,
@@ -621,7 +622,7 @@ def draw_filename(state: AppState):
     filepath = state.current_dir_images[state.index]
     filename = os.path.basename(filepath)
 
-    font_size = 24
+    font_size = cfg.FONT_DISPLAY_SIZE  # Read dynamically from config
     color = get_filename_text_color(state)
     shadow_color = RL_Color(0, 0, 0, 120)  # Semi-transparent dark shadow
     shadow_offset = 2  # Offset for shadow
