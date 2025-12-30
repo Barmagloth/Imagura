@@ -60,6 +60,8 @@ THUMB_BUILD_BUDGET_PER_FRAME = 2
 # Input
 DOUBLE_CLICK_TIME_MS = 300
 IDLE_THRESHOLD_SECONDS = 0.5
+KEY_REPEAT_DELAY = 0.4      # Seconds before key repeat starts
+KEY_REPEAT_INTERVAL = 0.08  # Seconds between repeats
 
 # Font settings
 # Font is loaded at this base size - using larger size for better quality when scaling down

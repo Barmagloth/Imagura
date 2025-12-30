@@ -29,6 +29,7 @@ from imagura.config import (
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA, GALLERY_SETTLE_DEBOUNCE_S,
     THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
     DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
+    KEY_REPEAT_DELAY, KEY_REPEAT_INTERVAL,
     TOOLBAR_TRIGGER_FRAC, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
     TOOLBAR_BG_ALPHA, TOOLBAR_SLIDE_MS,
     MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING, MENU_BG_ALPHA, MENU_HOVER_ALPHA,
@@ -616,50 +617,60 @@ def get_filename_text_color(state: AppState):
 
 
 def draw_filename(state: AppState):
+    """Draw filename and image dimensions at top of screen."""
     if not state.show_filename or state.index >= len(state.current_dir_images):
         return
 
     filepath = state.current_dir_images[state.index]
     filename = os.path.basename(filepath)
 
-    font_size = cfg.FONT_DISPLAY_SIZE  # Read dynamically from config
-    color = get_filename_text_color(state)
-    shadow_color = RL_Color(0, 0, 0, 120)  # Semi-transparent dark shadow
-    shadow_offset = 2  # Offset for shadow
+    # Build info string: filename + dimensions
+    if state.cache.curr:
+        info_text = f"{filename}  ({state.cache.curr.w} × {state.cache.curr.h})"
+    else:
+        info_text = filename
 
+    font_size = cfg.FONT_DISPLAY_SIZE
+    color = get_filename_text_color(state)
+    shadow_color = RL_Color(0, 0, 0, 150)
+
+    def draw_text_with_shadow(text: str, x: int, y: int, size: int, use_unicode: bool):
+        """Helper to draw text with shadow effect."""
+        text_bytes = text.encode('utf-8')
+        if use_unicode and state.unicode_font:
+            # Shadow passes
+            for dx in range(-1, 2):
+                for dy in range(1, 3):
+                    rl.DrawTextEx(state.unicode_font, text_bytes,
+                                  RL_V2(x + dx, y + dy), size, 1.0, shadow_color)
+            # Main text
+            rl.DrawTextEx(state.unicode_font, text_bytes, RL_V2(x, y), size, 1.0, color)
+        else:
+            # Fallback to default font
+            for dx in range(-1, 2):
+                for dy in range(1, 3):
+                    RL_DrawText(text, x + dx, y + dy, size, shadow_color)
+            RL_DrawText(text, x, y, size, color)
+
+    # Measure and center text
     if state.unicode_font:
         try:
-            filename_bytes = filename.encode('utf-8')
-            text_vec = rl.MeasureTextEx(state.unicode_font, filename_bytes, font_size, 1.0)
+            text_vec = rl.MeasureTextEx(state.unicode_font, info_text.encode('utf-8'), font_size, 1.0)
             text_width = int(text_vec.x)
             x = (state.screenW - text_width) // 2
-            y = 40
-            # Draw shadow first (offset and blurred effect via multiple draws)
-            for dx in range(-1, 2):
-                for dy in range(0, 3):
-                    if dx != 0 or dy != 0:
-                        rl.DrawTextEx(state.unicode_font, filename_bytes,
-                                      RL_V2(x + dx, y + dy), font_size, 1.0, shadow_color)
-            # Draw main text on top
-            rl.DrawTextEx(state.unicode_font, filename_bytes, RL_V2(x, y), font_size, 1.0, color)
+            draw_text_with_shadow(info_text, x, 40, font_size, use_unicode=True)
             return
         except Exception:
             pass
 
+    # Fallback measurement
     try:
-        text_width = rl.MeasureText(filename, font_size)
+        text_width = rl.MeasureText(info_text, font_size)
     except TypeError:
-        text_width = rl.MeasureText(filename.encode('utf-8'), font_size)
+        text_width = rl.MeasureText(info_text.encode('utf-8'), font_size)
 
     x = (state.screenW - text_width) // 2
-    y = 40
-    # Draw shadow first
-    for dx in range(-1, 2):
-        for dy in range(0, 3):
-            if dx != 0 or dy != 0:
-                RL_DrawText(filename, x + dx, y + dy, font_size, shadow_color)
-    # Draw main text
-    RL_DrawText(filename, x, y, font_size, color)
+    draw_text_with_shadow(info_text, x, 40, font_size, use_unicode=False)
 
 
 def draw_arrow_left(cx: int, cy: int, size: float, color):
@@ -2379,6 +2390,12 @@ def main():
     blur_enabled = False
     first_render_done = False
 
+    # Key repeat state for navigation
+    nav_key_state = {
+        'next': {'pressed_time': 0.0, 'last_repeat': 0.0},
+        'prev': {'pressed_time': 0.0, 'last_repeat': 0.0},
+    }
+
     try:
         while True:
             if state.open_anim_active:
@@ -2569,16 +2586,15 @@ def main():
                         save_view_for_path(state, path, nv)
                         state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
-            mid_left = state.screenW * 0.33
-            mid_right = state.screenW * 0.66
-            mid_top = state.screenH * 0.33
-            mid_bot = state.screenH * 0.66
-            in_mid = (mid_left <= mouse.x <= mid_right and mid_top <= mouse.y <= mid_bot)
+            # Double-click zone: everywhere except navigation edges (10% on each side)
+            edge_margin = 0.10
+            not_on_edge = (mouse.x > state.screenW * edge_margin and
+                          mouse.x < state.screenW * (1 - edge_margin))
 
             if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
                 start_toggle_zoom_animation(state)
 
-            if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active and not input_consumed:
+            if not_on_edge and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active and not input_consumed:
                 if detect_double_click(state, int(mouse.x), int(mouse.y)):
                     start_toggle_zoom_animation(state)
 
@@ -2617,12 +2633,48 @@ def main():
                 edge_left = (mouse.x <= state.screenW * 0.10)
                 edge_right = (mouse.x >= state.screenW * 0.90)
 
-                if rl.IsKeyPressed(KEY_NEXT_IMAGE) or rl.IsKeyPressed(KEY_NEXT_IMAGE_ALT):
-                    if state.index + 1 < len(state.current_dir_images):
+                # Navigation with key repeat support
+                current_time = now()
+
+                # Next image (Right, D)
+                next_down = rl.IsKeyDown(KEY_NEXT_IMAGE) or rl.IsKeyDown(KEY_NEXT_IMAGE_ALT)
+                if next_down:
+                    should_trigger = False
+                    if nav_key_state['next']['pressed_time'] == 0.0:
+                        # Key just pressed
+                        nav_key_state['next']['pressed_time'] = current_time
+                        nav_key_state['next']['last_repeat'] = current_time
+                        should_trigger = True
+                    elif current_time - nav_key_state['next']['pressed_time'] >= KEY_REPEAT_DELAY:
+                        # Key held long enough, check repeat interval
+                        if current_time - nav_key_state['next']['last_repeat'] >= KEY_REPEAT_INTERVAL:
+                            nav_key_state['next']['last_repeat'] = current_time
+                            should_trigger = True
+
+                    if should_trigger and state.index + 1 < len(state.current_dir_images):
                         switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
-                if rl.IsKeyPressed(KEY_PREV_IMAGE) or rl.IsKeyPressed(KEY_PREV_IMAGE_ALT):
-                    if state.index - 1 >= 0:
+                else:
+                    nav_key_state['next']['pressed_time'] = 0.0
+
+                # Previous image (Left, A)
+                prev_down = rl.IsKeyDown(KEY_PREV_IMAGE) or rl.IsKeyDown(KEY_PREV_IMAGE_ALT)
+                if prev_down:
+                    should_trigger = False
+                    if nav_key_state['prev']['pressed_time'] == 0.0:
+                        # Key just pressed
+                        nav_key_state['prev']['pressed_time'] = current_time
+                        nav_key_state['prev']['last_repeat'] = current_time
+                        should_trigger = True
+                    elif current_time - nav_key_state['prev']['pressed_time'] >= KEY_REPEAT_DELAY:
+                        # Key held long enough, check repeat interval
+                        if current_time - nav_key_state['prev']['last_repeat'] >= KEY_REPEAT_INTERVAL:
+                            nav_key_state['prev']['last_repeat'] = current_time
+                            should_trigger = True
+
+                    if should_trigger and state.index - 1 >= 0:
                         switch_to(state, state.index - 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
+                else:
+                    nav_key_state['prev']['pressed_time'] = 0.0
 
                 zoom_threshold = state.last_fit_view.scale * 1.1
                 is_significantly_zoomed = state.view.scale > zoom_threshold
