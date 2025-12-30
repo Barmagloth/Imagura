@@ -29,6 +29,7 @@ from .config import (
     ANIM_OPEN_MS, FIT_OPEN_SCALE, OPEN_ALPHA_START,
     TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING, TOOLBAR_BG_ALPHA,
     MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING, MENU_BG_ALPHA, MENU_HOVER_ALPHA,
+    FONT_DISPLAY_SIZE,
 )
 from .state.ui import ToolbarButtonId
 from .logging import now
@@ -289,7 +290,7 @@ class Renderer:
 
         filepath = state.current_dir_images[state.index]
         filename = os.path.basename(filepath)
-        font_size = 24
+        font_size = FONT_DISPLAY_SIZE  # Use display size from config
         color = self._get_filename_color(state)
 
         if state.unicode_font:

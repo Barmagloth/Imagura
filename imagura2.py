@@ -2432,36 +2432,29 @@ def main():
 
             # ─── Context Menu Input ─────────────────────────────────────────────
             menu = state.ui.context_menu
+            menu_consumed_click = False  # Track if menu consumed the click
+
             if menu.visible:
                 menu.hover_index = get_context_menu_item_at(state, mouse.x, mouse.y)
 
                 if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+                    menu_consumed_click = True  # Block click from propagating
                     if menu.hover_index >= 0:
                         item = menu.items[menu.hover_index]
                         log(f"[MENU] Clicked: {item.label}")
-                        menu.hide()
                         # Execute action
                         if item.id == MenuItemId.COPY:
                             if state.index < len(state.current_dir_images):
                                 path = state.current_dir_images[state.index]
                                 copy_image_to_clipboard(path)
-                        rl.EndDrawing()
-                        increment_frame()
-                        continue
-                    else:
-                        menu.hide()
-                        rl.EndDrawing()
-                        increment_frame()
-                        continue
+                    menu.hide()
 
                 if rl.IsKeyPressed(KEY_CLOSE):
                     menu.hide()
-                    rl.EndDrawing()
-                    increment_frame()
-                    continue
 
             # Right-click shows context menu (don't skip rendering)
-            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT) and not menu.visible:
+            # Don't show context menu when settings window is open
+            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT) and not menu.visible and not state.ui.settings.visible:
                 menu.show(int(mouse.x), int(mouse.y))
 
             # ─── Toolbar Input ──────────────────────────────────────────────────
@@ -2480,7 +2473,9 @@ def main():
                 toolbar.hover_index = -1
 
             # Toolbar button click
-            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and toolbar.hover_index >= 0:
+            toolbar_consumed_click = False
+            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and toolbar.hover_index >= 0 and not menu_consumed_click:
+                toolbar_consumed_click = True
                 btn = toolbar.buttons[toolbar.hover_index]
                 log(f"[TOOLBAR] Clicked: {btn.tooltip}")
 
@@ -2499,13 +2494,11 @@ def main():
                         if flip_image_file(path, horizontal=True):
                             reload_current_image(state)
 
-                rl.EndDrawing()
-                increment_frame()
-                continue
-
             # ─── Regular Input ──────────────────────────────────────────────────
+            # Track if any UI element consumed the click
+            input_consumed = menu_consumed_click or toolbar_consumed_click
 
-            if check_close_button_click(state):
+            if not input_consumed and check_close_button_click(state):
                 break
 
             state.idle_detector.mark_activity()
@@ -2594,7 +2587,7 @@ def main():
             if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
                 start_toggle_zoom_animation(state)
 
-            if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active:
+            if in_mid and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active and not input_consumed:
                 if detect_double_click(state, int(mouse.x), int(mouse.y)):
                     start_toggle_zoom_animation(state)
 
@@ -2607,7 +2600,7 @@ def main():
                 if rl.IsMouseButtonPressed(
                         rl.MOUSE_BUTTON_LEFT) and state.is_zoomed and over_img and not is_point_in_close_button(state,
                                                                                                                 mouse.x,
-                                                                                                                mouse.y):
+                                                                                                                mouse.y) and not input_consumed:
                     state.is_panning = True
                     state.pan_start_mouse = (mouse.x, mouse.y)
                     state.pan_start_offset = (state.view.offx, state.view.offy)
@@ -2647,7 +2640,7 @@ def main():
                 yv = state.screenH - gh
                 in_gallery_panel = (yv <= mouse.y <= state.screenH)
 
-                if not is_significantly_zoomed and not in_gallery_panel:
+                if not is_significantly_zoomed and not in_gallery_panel and not input_consumed:
                     if edge_right and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
                         if state.index + 1 < len(state.current_dir_images):
                             switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
@@ -2655,7 +2648,7 @@ def main():
                         if state.index - 1 >= 0:
                             switch_to(state, state.index - 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
 
-            if check_close_button_click(state):
+            if not input_consumed and check_close_button_click(state):
                 break
 
             render_image(state)
