@@ -261,61 +261,64 @@ def toggle_window_mode(state: AppState):
     """
     if not state.windowed_mode:
         # Switch to windowed mode
-        # Save current fullscreen dimensions
-        state.window.fullscreen_x, state.window.fullscreen_y = 0, 0
-        state.window.fullscreen_w = state.screenW
-        state.window.fullscreen_h = state.screenH
+        # Save current fullscreen dimensions and position
+        work_x, work_y, work_w, work_h = get_work_area()
+        if work_w == 0 or work_h == 0:
+            work_w, work_h = state.screenW, state.screenH
+            work_x, work_y = 0, 0
+
+        state.window.fullscreen_x = work_x
+        state.window.fullscreen_y = work_y
+        state.window.fullscreen_w = work_w
+        state.window.fullscreen_h = work_h
 
         # Calculate window size based on current image
         if state.cache.curr:
             img_w, img_h = state.cache.curr.w, state.cache.curr.h
         else:
-            img_w, img_h = state.screenW // 2, state.screenH // 2
+            img_w, img_h = work_w // 2, work_h // 2
 
-        work_x, work_y, work_w, work_h = get_work_area()
-        if work_w == 0 or work_h == 0:
-            work_w, work_h = state.screenW, state.screenH
+        # Account for window decorations (title bar ~32px, borders ~8px each side)
+        title_bar_h = 32
+        border_w = 8
+        available_w = work_w - border_w * 2
+        available_h = work_h - title_bar_h - border_w
 
         # Calculate scale: at least 50%, at most 100%
-        # If image fits at 100%, use 100%
-        # If image doesn't fit, use max that fits
-        # But never less than 50%
-        scale_w = work_w / img_w if img_w > 0 else 1.0
-        scale_h = work_h / img_h if img_h > 0 else 1.0
+        scale_w = available_w / img_w if img_w > 0 else 1.0
+        scale_h = available_h / img_h if img_h > 0 else 1.0
         max_fit_scale = min(scale_w, scale_h)
 
         if max_fit_scale >= 1.0:
-            # Image fits at 100% scale
             scale = 1.0
         elif max_fit_scale >= 0.5:
-            # Image fits between 50% and 100%
             scale = max_fit_scale
         else:
-            # Image is too big even at 50%, maximize window
-            scale = max_fit_scale  # Will be < 0.5, window will be work area size
+            scale = max_fit_scale
 
         win_w = int(img_w * scale)
         win_h = int(img_h * scale)
 
-        # Ensure window doesn't exceed work area
-        win_w = min(win_w, work_w)
-        win_h = min(win_h, work_h)
+        # Ensure window doesn't exceed available area
+        win_w = min(win_w, available_w)
+        win_h = min(win_h, available_h)
 
         # Ensure minimum reasonable size
         win_w = max(win_w, 200)
         win_h = max(win_h, 200)
 
-        # Center window on screen
+        # Center window on work area
         win_x = work_x + (work_w - win_w) // 2
         win_y = work_y + (work_h - win_h) // 2
 
-        # Remove undecorated flag (add window decorations)
+        # First clear undecorated flag and set resizable
         try:
             rl.ClearWindowState(rl.FLAG_WINDOW_UNDECORATED)
+            rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE)
         except Exception:
             pass
 
-        # Set window size and position
+        # Then set window size and position
         try:
             rl.SetWindowSize(win_w, win_h)
             rl.SetWindowPosition(win_x, win_y)
@@ -336,7 +339,12 @@ def toggle_window_mode(state: AppState):
         log(f"[WINDOW] Switched to windowed mode: {win_w}x{win_h}")
     else:
         # Switch back to fullscreen (borderless)
-        # Restore undecorated flag
+        # Clear resizable flag and restore undecorated
+        try:
+            rl.ClearWindowState(rl.FLAG_WINDOW_RESIZABLE)
+        except Exception:
+            pass
+
         flags = rl.FLAG_WINDOW_UNDECORATED | getattr(rl, 'FLAG_WINDOW_ALWAYS_RUN', 0)
         try:
             rl.SetWindowState(flags)
@@ -344,10 +352,14 @@ def toggle_window_mode(state: AppState):
             pass
 
         # Restore fullscreen size and position
-        work_x, work_y, work_w, work_h = get_work_area()
+        work_x = state.window.fullscreen_x
+        work_y = state.window.fullscreen_y
+        work_w = state.window.fullscreen_w
+        work_h = state.window.fullscreen_h
+
+        # Fallback to current work area if saved values are invalid
         if work_w == 0 or work_h == 0:
-            work_w = state.window.fullscreen_w
-            work_h = state.window.fullscreen_h
+            work_x, work_y, work_w, work_h = get_work_area()
 
         try:
             rl.SetWindowSize(work_w, work_h)
