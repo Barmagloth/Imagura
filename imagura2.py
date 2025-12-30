@@ -1243,6 +1243,8 @@ def validate_settings_value(value_str: str, val_type: type, min_val, max_val) ->
 
 def handle_settings_input(state: AppState) -> bool:
     """Handle input for settings window. Returns True if input was consumed."""
+    import imagura.config as cfg  # Import at function start for nested functions
+
     settings = state.ui.settings
     if not settings.visible:
         return False
@@ -2507,13 +2509,6 @@ def main():
             if rl.IsKeyPressed(KEY_CYCLE_BG):
                 state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
                 state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
-
-            # TEST KEYS for blur modes (0-9)
-            for test_key in range(10):
-                if rl.IsKeyPressed(rl.KEY_ZERO + test_key):
-                    build = WinBlur._get_windows_build()
-                    desc = WinBlur.test_mode(state.hwnd, test_key)
-                    log(f"[BLUR_TEST] Build={build} Mode {test_key}: {desc} -> method={WinBlur._active_method}")
 
             # DEL key - delete image to recycle bin
             if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active:
