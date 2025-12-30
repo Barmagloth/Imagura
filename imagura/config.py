@@ -7,12 +7,12 @@ TARGET_FPS = 120
 ASYNC_WORKERS = 10
 
 # Animation durations (milliseconds)
-ANIM_SWITCH_KEYS_MS = 200
+ANIM_SWITCH_KEYS_MS = 250
 ANIM_SWITCH_GALLERY_MS = 10
 ANIM_TOGGLE_ZOOM_MS = 150
 ANIM_OPEN_MS = 300
-ANIM_ZOOM_MS = 100
-GALLERY_SLIDE_MS = 50
+ANIM_ZOOM_MS = 150
+GALLERY_SLIDE_MS = 0
 
 # View defaults
 FIT_DEFAULT_SCALE = 0.95
@@ -20,7 +20,7 @@ FIT_OPEN_SCALE = 0.60
 OPEN_ALPHA_START = 0.4
 
 # Zoom
-ZOOM_STEP_KEYS = 0.01
+ZOOM_STEP_KEYS = 0.05
 ZOOM_STEP_WHEEL = 0.1
 MAX_ZOOM = 20.0  # Maximum zoom level (2000%)
 
@@ -68,7 +68,7 @@ KEY_REPEAT_INTERVAL = 0.08  # Seconds between repeats
 # Font is loaded at this base size - using larger size for better quality when scaling down
 FONT_SIZE = 32
 # Display size for filename overlay (can be different from load size)
-FONT_DISPLAY_SIZE = 24
+FONT_DISPLAY_SIZE = 27
 FONT_ANTIALIAS = True
 
 # Hotkeys (raylib key codes)

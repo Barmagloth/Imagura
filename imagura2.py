@@ -725,7 +725,7 @@ def draw_filename(state: AppState):
     shadow_color = RL_Color(0, 0, 0, 150)
 
     def draw_text_with_shadow(text: str, x: int, y: int, size: int, use_unicode: bool):
-        """Helper to draw text with shadow effect."""
+        """Helper to draw text with shadow effect and bold simulation."""
         text_bytes = text.encode('utf-8')
         if use_unicode and state.unicode_font:
             # Shadow passes
@@ -733,14 +733,17 @@ def draw_filename(state: AppState):
                 for dy in range(1, 3):
                     rl.DrawTextEx(state.unicode_font, text_bytes,
                                   RL_V2(x + dx, y + dy), size, 1.0, shadow_color)
-            # Main text
+            # Main text with bold effect (draw twice with 1px offset)
             rl.DrawTextEx(state.unicode_font, text_bytes, RL_V2(x, y), size, 1.0, color)
+            rl.DrawTextEx(state.unicode_font, text_bytes, RL_V2(x + 1, y), size, 1.0, color)
         else:
             # Fallback to default font
             for dx in range(-1, 2):
                 for dy in range(1, 3):
                     RL_DrawText(text, x + dx, y + dy, size, shadow_color)
+            # Bold effect
             RL_DrawText(text, x, y, size, color)
+            RL_DrawText(text, x + 1, y, size, color)
 
     # Measure and center text
     if state.unicode_font:
@@ -1953,11 +1956,15 @@ def update_gallery_visibility_and_slide(state: AppState):
     state.gallery_visible = want_show
     cur = state.gallery_y
     tgt = y_visible if want_show else y_hidden
-    step = (gh / (GALLERY_SLIDE_MS / 1000.0)) / TARGET_FPS
-    if abs(cur - tgt) <= step:
+    if GALLERY_SLIDE_MS <= 0:
+        # Instant transition when slide time is 0
         state.gallery_y = tgt
     else:
-        state.gallery_y = cur - step if cur > tgt else cur + step
+        step = (gh / (GALLERY_SLIDE_MS / 1000.0)) / TARGET_FPS
+        if abs(cur - tgt) <= step:
+            state.gallery_y = tgt
+        else:
+            state.gallery_y = cur - step if cur > tgt else cur + step
 
 
 def is_mouse_over_gallery(state: AppState) -> bool:
