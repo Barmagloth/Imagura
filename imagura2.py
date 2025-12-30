@@ -327,10 +327,7 @@ def toggle_window_mode(state: AppState):
 
         # Recalculate view for new window size
         if state.cache.curr:
-            state.view = compute_fit_view(
-                state.cache.curr.w, state.cache.curr.h,
-                state.screenW, state.screenH, FIT_DEFAULT_SCALE
-            )
+            state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
 
         # Re-apply blur effect with new hwnd if needed
         state.hwnd = get_window_handle_from_raylib()
@@ -363,10 +360,7 @@ def toggle_window_mode(state: AppState):
 
         # Recalculate view for restored window size
         if state.cache.curr:
-            state.view = compute_fit_view(
-                state.cache.curr.w, state.cache.curr.h,
-                state.screenW, state.screenH, FIT_DEFAULT_SCALE
-            )
+            state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
 
         # Re-apply blur effect
         state.hwnd = get_window_handle_from_raylib()
