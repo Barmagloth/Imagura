@@ -22,6 +22,7 @@ OPEN_ALPHA_START = 0.4
 # Zoom
 ZOOM_STEP_KEYS = 0.01
 ZOOM_STEP_WHEEL = 0.1
+MAX_ZOOM = 20.0  # Maximum zoom level (2000%)
 
 # Close button
 CLOSE_BTN_RADIUS = 28

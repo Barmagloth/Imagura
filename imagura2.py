@@ -8,10 +8,18 @@ import atexit
 import traceback
 from dataclasses import dataclass, field
 from collections import OrderedDict, deque
-from typing import List, Tuple, Optional, Deque, Callable, Any
+from typing import List, Tuple, Optional, Deque, Callable, Any, Dict
 from queue import PriorityQueue, Empty
 from threading import Thread, Lock
 import math
+from datetime import datetime
+
+try:
+    from PIL import Image
+    from PIL.ExifTags import TAGS
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 # Import from new modules
 import imagura.config as cfg  # For dynamic access to config values
@@ -20,7 +28,7 @@ from imagura.config import (
     ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS, ANIM_TOGGLE_ZOOM_MS,
     ANIM_OPEN_MS, ANIM_ZOOM_MS, GALLERY_SLIDE_MS,
     FIT_DEFAULT_SCALE, FIT_OPEN_SCALE, OPEN_ALPHA_START,
-    ZOOM_STEP_KEYS, ZOOM_STEP_WHEEL,
+    ZOOM_STEP_KEYS, ZOOM_STEP_WHEEL, MAX_ZOOM,
     CLOSE_BTN_RADIUS, CLOSE_BTN_MARGIN, CLOSE_BTN_ALPHA_MIN,
     CLOSE_BTN_ALPHA_FAR, CLOSE_BTN_ALPHA_MAX, CLOSE_BTN_ALPHA_HOVER,
     CLOSE_BTN_BG_ALPHA_MAX, NAV_BTN_RADIUS, NAV_BTN_BG_ALPHA_MAX,
@@ -605,6 +613,89 @@ def check_close_button_click(state: AppState) -> bool:
         return False
     mouse = rl.GetMousePosition()
     return is_point_in_close_button(state, mouse.x, mouse.y)
+
+
+# Cache for image metadata to avoid re-reading EXIF every frame
+_metadata_cache: Dict[str, Dict[str, str]] = {}
+
+
+def get_image_metadata(filepath: str) -> Dict[str, str]:
+    """Read EXIF metadata from image file. Returns cached result if available."""
+    if filepath in _metadata_cache:
+        return _metadata_cache[filepath]
+
+    metadata: Dict[str, str] = {}
+
+    if not HAS_PIL:
+        _metadata_cache[filepath] = metadata
+        return metadata
+
+    try:
+        with Image.open(filepath) as img:
+            exif_data = img._getexif()
+            if exif_data:
+                for tag_id, value in exif_data.items():
+                    tag_name = TAGS.get(tag_id, str(tag_id))
+
+                    # Date taken
+                    if tag_name == 'DateTimeOriginal':
+                        try:
+                            dt = datetime.strptime(str(value), '%Y:%m:%d %H:%M:%S')
+                            metadata['date'] = dt.strftime('%Y-%m-%d %H:%M')
+                        except (ValueError, TypeError):
+                            metadata['date'] = str(value)
+
+                    # Camera model
+                    elif tag_name == 'Model':
+                        metadata['camera'] = str(value).strip()
+
+                    # Focal length
+                    elif tag_name == 'FocalLength':
+                        if hasattr(value, 'numerator') and hasattr(value, 'denominator'):
+                            focal = value.numerator / value.denominator if value.denominator else 0
+                            metadata['focal'] = f"{focal:.0f}mm"
+                        else:
+                            metadata['focal'] = f"{value}mm"
+
+                    # Aperture
+                    elif tag_name == 'FNumber':
+                        if hasattr(value, 'numerator') and hasattr(value, 'denominator'):
+                            f_num = value.numerator / value.denominator if value.denominator else 0
+                            metadata['aperture'] = f"f/{f_num:.1f}"
+                        else:
+                            metadata['aperture'] = f"f/{value}"
+
+                    # ISO
+                    elif tag_name == 'ISOSpeedRatings':
+                        metadata['iso'] = f"ISO {value}"
+
+                    # Exposure time
+                    elif tag_name == 'ExposureTime':
+                        if hasattr(value, 'numerator') and hasattr(value, 'denominator'):
+                            if value.denominator and value.numerator:
+                                if value.numerator < value.denominator:
+                                    metadata['exposure'] = f"1/{value.denominator // value.numerator}s"
+                                else:
+                                    exp = value.numerator / value.denominator
+                                    metadata['exposure'] = f"{exp:.1f}s"
+                        else:
+                            metadata['exposure'] = f"{value}s"
+
+    except Exception as e:
+        log(f"[METADATA] Error reading EXIF from {filepath}: {e}")
+
+    _metadata_cache[filepath] = metadata
+    return metadata
+
+
+def get_zoom_mode_label(state: AppState) -> str:
+    """Get human-readable zoom mode label based on zoom_state_cycle."""
+    if state.zoom_state_cycle == 0:
+        return "1:1"
+    elif state.zoom_state_cycle == 1:
+        return "Fit"
+    else:
+        return "Custom"
 
 
 def get_filename_text_color(state: AppState):
@@ -2541,7 +2632,8 @@ def main():
 
             if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
                 if rl.IsKeyDown(KEY_ZOOM_IN) or rl.IsKeyDown(KEY_ZOOM_IN_ALT):
-                    nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 + ZOOM_STEP_KEYS),
+                    new_scale = min(state.view.scale * (1.0 + ZOOM_STEP_KEYS), MAX_ZOOM)
+                    nv = recompute_view_anchor_zoom(state.view, new_scale,
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
                     nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
                     start_zoom_animation(state, nv)
@@ -2576,7 +2668,8 @@ def main():
                     state.gallery_target_index = target
                     state.gallery_last_wheel_time = now()
                 else:
-                    nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 + wheel * ZOOM_STEP_WHEEL),
+                    new_scale = min(state.view.scale * (1.0 + wheel * ZOOM_STEP_WHEEL), MAX_ZOOM)
+                    nv = recompute_view_anchor_zoom(state.view, new_scale,
                                                     (int(mouse.x), int(mouse.y)), state.cache.curr)
                     nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
                     start_zoom_animation(state, nv)
@@ -2617,8 +2710,13 @@ def main():
 
                 if rl.IsMouseButtonReleased(rl.MOUSE_BUTTON_LEFT):
                     if state.is_panning:
+                        # Check if actual panning occurred (mouse moved significantly)
+                        dx = abs(mouse.x - state.pan_start_mouse[0])
+                        dy = abs(mouse.y - state.pan_start_mouse[1])
+                        actually_panned = dx > 5 or dy > 5
+
                         state.is_panning = False
-                        if state.cache.curr and state.index < len(state.current_dir_images):
+                        if actually_panned and state.cache.curr and state.index < len(state.current_dir_images):
                             path = state.current_dir_images[state.index]
                             state.zoom_state_cycle = 2
                             save_view_for_path(state, path, state.view)
@@ -2716,16 +2814,54 @@ def main():
 
             if state.show_hud:
                 hud_font_size = cfg.FONT_DISPLAY_SIZE
-                hud_y = state.screenH - 120
                 line_spacing = hud_font_size + 4
                 hud_color = RL_Color(200, 200, 200, 255)
 
-                # Build HUD lines (without renderer info)
-                hud_lines = [
-                    f"[{state.index + 1}/{len(state.current_dir_images)}] zoom={state.view.scale:.2f}",
-                ]
+                # Build HUD lines
+                hud_lines = []
+
+                # Line 1: Index/total
+                total = len(state.current_dir_images)
+                hud_lines.append(f"[{state.index + 1}/{total}]")
+
+                # Line 2: Zoom with mode label
+                zoom_pct = int(state.view.scale * 100)
+                zoom_mode = get_zoom_mode_label(state)
+                hud_lines.append(f"{zoom_pct}% ({zoom_mode})")
+
+                # Line 3: Resolution (use 'x' for cross-platform compatibility)
                 if state.cache.curr:
-                    hud_lines.append(f"size: {state.cache.curr.w} × {state.cache.curr.h}")
+                    hud_lines.append(f"{state.cache.curr.w} x {state.cache.curr.h}")
+
+                # Line 4+: Metadata from EXIF
+                if state.index < len(state.current_dir_images):
+                    filepath = state.current_dir_images[state.index]
+                    metadata = get_image_metadata(filepath)
+                    if metadata:
+                        # Date taken
+                        if 'date' in metadata:
+                            hud_lines.append(metadata['date'])
+                        # Camera settings on one line
+                        camera_info = []
+                        if 'camera' in metadata:
+                            camera_info.append(metadata['camera'])
+                        if camera_info:
+                            hud_lines.append(' '.join(camera_info))
+                        # Exposure settings
+                        exp_info = []
+                        if 'focal' in metadata:
+                            exp_info.append(metadata['focal'])
+                        if 'aperture' in metadata:
+                            exp_info.append(metadata['aperture'])
+                        if 'exposure' in metadata:
+                            exp_info.append(metadata['exposure'])
+                        if 'iso' in metadata:
+                            exp_info.append(metadata['iso'])
+                        if exp_info:
+                            hud_lines.append(' | '.join(exp_info))
+
+                # Calculate Y position from bottom
+                hud_y = state.screenH - (len(hud_lines) * line_spacing + 20)
 
                 # Draw HUD with unicode font if available
                 for i, line in enumerate(hud_lines):
