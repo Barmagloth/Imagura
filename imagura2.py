@@ -1524,6 +1524,8 @@ def handle_settings_input(state: AppState) -> bool:
 
 def draw_settings_window(state: AppState):
     """Draw settings window overlay."""
+    import imagura.config as cfg  # Import at start to avoid scope issues
+
     settings = state.ui.settings
     if not settings.visible:
         return
@@ -1574,7 +1576,6 @@ def draw_settings_window(state: AppState):
     val_x = win_x + win_w - 110
     val_w = 90
 
-    import imagura.config as cfg
     editable_idx = 0
 
     for item in SETTINGS_ITEMS:
