@@ -617,18 +617,16 @@ def get_filename_text_color(state: AppState):
 
 
 def draw_filename(state: AppState):
-    """Draw filename and image dimensions at top of screen."""
+    """Draw image index and filename at top of screen."""
     if not state.show_filename or state.index >= len(state.current_dir_images):
         return
 
     filepath = state.current_dir_images[state.index]
     filename = os.path.basename(filepath)
 
-    # Build info string: filename + dimensions
-    if state.cache.curr:
-        info_text = f"{filename}  ({state.cache.curr.w} × {state.cache.curr.h})"
-    else:
-        info_text = filename
+    # Build info string: [index/total] filename
+    total = len(state.current_dir_images)
+    info_text = f"[{state.index + 1} / {total}] {filename}"
 
     font_size = cfg.FONT_DISPLAY_SIZE
     color = get_filename_text_color(state)
@@ -1119,7 +1117,7 @@ def draw_context_menu(state: AppState):
     if n_items == 0:
         return
 
-    font_size = 16
+    font_size = cfg.FONT_DISPLAY_SIZE
     menu_w = MENU_ITEM_WIDTH
     menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
 
@@ -1452,17 +1450,19 @@ def draw_settings_window(state: AppState):
     rl.DrawRectangle(win_x, win_y, win_w, win_h, RL_Color(30, 30, 30, 250))
     rl.DrawRectangleLines(win_x, win_y, win_w, win_h, RL_Color(100, 100, 100, 255))
 
+    # Font size from config
+    font_size = cfg.FONT_DISPLAY_SIZE
+
     # Title
     title = "Настройки"
-    title_size = 22
     if state.unicode_font:
         try:
             rl.DrawTextEx(state.unicode_font, title.encode('utf-8'),
-                          RL_V2(win_x + 20, win_y + 15), title_size, 1.0, RL_Color(255, 255, 255, 255))
+                          RL_V2(win_x + 20, win_y + 15), font_size, 1.0, RL_Color(255, 255, 255, 255))
         except Exception:
-            RL_DrawText("Settings", win_x + 20, win_y + 15, title_size, RL_Color(255, 255, 255, 255))
+            RL_DrawText("Settings", win_x + 20, win_y + 15, font_size, RL_Color(255, 255, 255, 255))
     else:
-        RL_DrawText("Settings", win_x + 20, win_y + 15, title_size, RL_Color(255, 255, 255, 255))
+        RL_DrawText("Settings", win_x + 20, win_y + 15, font_size, RL_Color(255, 255, 255, 255))
 
     # Close button (X)
     close_x = win_x + win_w - 30
@@ -1470,11 +1470,11 @@ def draw_settings_window(state: AppState):
     if state.unicode_font:
         try:
             rl.DrawTextEx(state.unicode_font, b"X",
-                          RL_V2(close_x, close_y), 20, 1.0, RL_Color(200, 200, 200, 255))
+                          RL_V2(close_x, close_y), font_size, 1.0, RL_Color(200, 200, 200, 255))
         except Exception:
-            RL_DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
+            RL_DrawText("X", close_x, close_y, font_size, RL_Color(200, 200, 200, 255))
     else:
-        RL_DrawText("X", close_x, close_y, 20, RL_Color(200, 200, 200, 255))
+        RL_DrawText("X", close_x, close_y, font_size, RL_Color(200, 200, 200, 255))
 
     # Settings items
     item_y = win_y + 50
@@ -1495,11 +1495,11 @@ def draw_settings_window(state: AppState):
             if state.unicode_font:
                 try:
                     rl.DrawTextEx(state.unicode_font, label.encode('utf-8'),
-                                  RL_V2(win_x + padding_x, item_y + 6), 16, 1.0, RL_Color(180, 180, 180, 255))
+                                  RL_V2(win_x + padding_x, item_y + 6), font_size, 1.0, RL_Color(180, 180, 180, 255))
                 except Exception:
-                    RL_DrawText(label, win_x + padding_x, item_y + 6, 16, RL_Color(180, 180, 180, 255))
+                    RL_DrawText(label, win_x + padding_x, item_y + 6, font_size, RL_Color(180, 180, 180, 255))
             else:
-                RL_DrawText(label, win_x + padding_x, item_y + 6, 16, RL_Color(180, 180, 180, 255))
+                RL_DrawText(label, win_x + padding_x, item_y + 6, font_size, RL_Color(180, 180, 180, 255))
         else:
             # Config item
             current_val = getattr(cfg, config_key, "?")
@@ -1509,11 +1509,11 @@ def draw_settings_window(state: AppState):
             if state.unicode_font:
                 try:
                     rl.DrawTextEx(state.unicode_font, label_text.encode('utf-8'),
-                                  RL_V2(win_x + padding_x, item_y + 6), 14, 1.0, RL_Color(200, 200, 200, 255))
+                                  RL_V2(win_x + padding_x, item_y + 6), font_size, 1.0, RL_Color(200, 200, 200, 255))
                 except Exception:
-                    RL_DrawText(label_text, win_x + padding_x, item_y + 6, 14, RL_Color(200, 200, 200, 255))
+                    RL_DrawText(label_text, win_x + padding_x, item_y + 6, font_size, RL_Color(200, 200, 200, 255))
             else:
-                RL_DrawText(label_text, win_x + padding_x, item_y + 6, 14, RL_Color(200, 200, 200, 255))
+                RL_DrawText(label_text, win_x + padding_x, item_y + 6, font_size, RL_Color(200, 200, 200, 255))
 
             # Check if this item is being edited
             is_editing = (settings.editing_item == editable_idx)
@@ -1529,11 +1529,11 @@ def draw_settings_window(state: AppState):
                 if state.unicode_font:
                     try:
                         rl.DrawTextEx(state.unicode_font, edit_text.encode('utf-8'),
-                                      RL_V2(val_x, item_y + 6), 14, 1.0, RL_Color(255, 255, 255, 255))
+                                      RL_V2(val_x, item_y + 6), font_size, 1.0, RL_Color(255, 255, 255, 255))
                     except Exception:
-                        RL_DrawText(edit_text, val_x, item_y + 6, 14, RL_Color(255, 255, 255, 255))
+                        RL_DrawText(edit_text, val_x, item_y + 6, font_size, RL_Color(255, 255, 255, 255))
                 else:
-                    RL_DrawText(edit_text, val_x, item_y + 6, 14, RL_Color(255, 255, 255, 255))
+                    RL_DrawText(edit_text, val_x, item_y + 6, font_size, RL_Color(255, 255, 255, 255))
             else:
                 # Hover highlight
                 mouse = rl.GetMousePosition()
@@ -1545,11 +1545,11 @@ def draw_settings_window(state: AppState):
                 if state.unicode_font:
                     try:
                         rl.DrawTextEx(state.unicode_font, val_str.encode('utf-8'),
-                                      RL_V2(val_x, item_y + 6), 14, 1.0, RL_Color(100, 200, 255, 255))
+                                      RL_V2(val_x, item_y + 6), font_size, 1.0, RL_Color(100, 200, 255, 255))
                     except Exception:
-                        RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
+                        RL_DrawText(val_str, val_x, item_y + 6, font_size, RL_Color(100, 200, 255, 255))
                 else:
-                    RL_DrawText(val_str, val_x, item_y + 6, 14, RL_Color(100, 200, 255, 255))
+                    RL_DrawText(val_str, val_x, item_y + 6, font_size, RL_Color(100, 200, 255, 255))
 
             editable_idx += 1
 
@@ -1560,14 +1560,15 @@ def draw_settings_window(state: AppState):
         hint = "Enter: Сохранить | Esc: Отмена"
     else:
         hint = "Клик по значению для редактирования | Esc: Закрыть"
+    hint_size = max(12, font_size - 4)  # Slightly smaller than main font
     if state.unicode_font:
         try:
             rl.DrawTextEx(state.unicode_font, hint.encode('utf-8'),
-                          RL_V2(win_x + 20, win_y + win_h - 25), 12, 1.0, RL_Color(120, 120, 120, 255))
+                          RL_V2(win_x + 20, win_y + win_h - 30), hint_size, 1.0, RL_Color(120, 120, 120, 255))
         except Exception:
-            RL_DrawText(hint, win_x + 20, win_y + win_h - 25, 12, RL_Color(120, 120, 120, 255))
+            RL_DrawText(hint, win_x + 20, win_y + win_h - 30, hint_size, RL_Color(120, 120, 120, 255))
     else:
-        RL_DrawText(hint, win_x + 20, win_y + win_h - 25, 12, RL_Color(120, 120, 120, 255))
+        RL_DrawText(hint, win_x + 20, win_y + win_h - 30, hint_size, RL_Color(120, 120, 120, 255))
 
 
 def delete_to_recycle_bin(file_path: str) -> bool:
@@ -2594,8 +2595,10 @@ def main():
             if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
                 start_toggle_zoom_animation(state)
 
-            if not_on_edge and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not state.toggle_zoom_active and not input_consumed:
-                if detect_double_click(state, int(mouse.x), int(mouse.y)):
+            # Always track clicks for double-click detection, even during animation
+            if not_on_edge and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not input_consumed:
+                is_double = detect_double_click(state, int(mouse.x), int(mouse.y))
+                if is_double and not state.toggle_zoom_active:
                     start_toggle_zoom_animation(state)
 
             if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
@@ -2712,19 +2715,29 @@ def main():
             draw_loading_indicator(state)
 
             if state.show_hud:
-                hud_y = state.screenH - 180
-                line_spacing = 24
-                RL_DrawText(f"RL={RL_VER}", 12, hud_y, 16, rl.LIGHTGRAY)
-                RL_DrawText(f"idx={state.index + 1}/{len(state.current_dir_images)} zoom={state.view.scale:.3f}", 12,
-                            hud_y + line_spacing, 16, rl.LIGHTGRAY)
-                RL_DrawText(f"loading={state.loading_current} idle={state.idle_detector.is_idle()}", 12,
-                            hud_y + line_spacing * 2, 16, rl.LIGHTGRAY)
+                hud_font_size = cfg.FONT_DISPLAY_SIZE
+                hud_y = state.screenH - 120
+                line_spacing = hud_font_size + 4
+                hud_color = RL_Color(200, 200, 200, 255)
+
+                # Build HUD lines (without renderer info)
+                hud_lines = [
+                    f"[{state.index + 1}/{len(state.current_dir_images)}] zoom={state.view.scale:.2f}",
+                ]
                 if state.cache.curr:
-                    tid = getattr(state.cache.curr.tex, 'id', 0)
-                    RL_DrawText(f"curr_tex_id={tid} w={state.cache.curr.w} h={state.cache.curr.h}", 12,
-                                hud_y + line_spacing * 3, 16, rl.LIGHTGRAY)
-                else:
-                    RL_DrawText(f"curr_tex=None", 12, hud_y + line_spacing * 3, 16, rl.LIGHTGRAY)
+                    hud_lines.append(f"size: {state.cache.curr.w} × {state.cache.curr.h}")
+
+                # Draw HUD with unicode font if available
+                for i, line in enumerate(hud_lines):
+                    y_pos = hud_y + i * line_spacing
+                    if state.unicode_font:
+                        try:
+                            rl.DrawTextEx(state.unicode_font, line.encode('utf-8'),
+                                          RL_V2(12, y_pos), hud_font_size, 1.0, hud_color)
+                            continue
+                        except Exception:
+                            pass
+                    RL_DrawText(line, 12, y_pos, hud_font_size, hud_color)
 
             # Draw toolbar, context menu and settings (on top of everything)
             draw_toolbar(state)
