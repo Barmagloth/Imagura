@@ -62,7 +62,10 @@ DOUBLE_CLICK_TIME_MS = 300
 IDLE_THRESHOLD_SECONDS = 0.5
 
 # Font settings
-FONT_SIZE = 26
+# Font is loaded at this base size - using larger size for better quality when scaling down
+FONT_SIZE = 32
+# Display size for filename overlay (can be different from load size)
+FONT_DISPLAY_SIZE = 24
 FONT_ANTIALIAS = True
 
 # Hotkeys (raylib key codes)
