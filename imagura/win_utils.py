@@ -328,30 +328,27 @@ class WinBlur:
 
     @classmethod
     def enable(cls, hwnd: Optional[int]) -> None:
-        """Enable blur/transparency effect on window."""
+        """Enable blur/transparency effect on window.
+
+        Uses only proven working modes:
+        - Mode 4: ACCENT_ENABLE_ACRYLICBLURBEHIND (acrylic blur)
+        - Mode 3: ACCENT_ENABLE_BLURBEHIND (basic blur fallback)
+        """
         if not hwnd:
             return
 
         cls._active_method = None
-        build = cls._get_windows_build()
 
         # Extend frame into client area (required for all methods)
         cls._extend_frame_into_client(hwnd, True)
 
-        # Windows 11 (build 22000+)
-        if build >= 22000:
-            # Try host backdrop (gives transparency on Win11)
-            if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_HOSTBACKDROP, 0):
-                cls._active_method = "host_backdrop"
-                return
-
-        # Windows 10 or fallback
-        # Acrylic with semi-transparent dark tint (60% opacity)
+        # Try Acrylic blur first (mode 4) - works on both Win10 and Win11
+        # Semi-transparent dark tint (60% opacity)
         if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000):
             cls._active_method = "acrylic"
             return
 
-        # Basic blur
+        # Fallback to basic blur (mode 3)
         if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000):
             cls._active_method = "blur"
             return
