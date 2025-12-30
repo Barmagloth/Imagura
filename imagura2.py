@@ -1979,7 +1979,8 @@ def render_gallery(state: AppState):
     state.gallery_y = clamp(state.gallery_y, y_visible, y_hidden)
     y = int(state.gallery_y)
 
-    alpha_panel = 1.0 - ((state.gallery_y - y_visible) / (y_hidden - y_visible))
+    denom = y_hidden - y_visible
+    alpha_panel = 1.0 - ((state.gallery_y - y_visible) / denom) if denom > 0 else 1.0
     rl.DrawRectangle(0, y, sw, gh, RL_Color(0, 0, 0, int(255 * 0.6 * alpha_panel)))
 
     mouse = rl.GetMousePosition()
