@@ -25,7 +25,7 @@ from .config import (
     BG_MODES,
     CLOSE_BTN_RADIUS, CLOSE_BTN_MARGIN, CLOSE_BTN_BG_ALPHA_MAX,
     NAV_BTN_RADIUS, NAV_BTN_BG_ALPHA_MAX,
-    GALLERY_HEIGHT_FRAC, GALLERY_THUMB_SPACING,
+    GALLERY_HEIGHT_FRAC, GALLERY_THUMB_SPACING, GALLERY_MIN_HEIGHT_PX,
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA,
     ANIM_OPEN_MS, FIT_OPEN_SCALE, OPEN_ALPHA_START,
     TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING, TOOLBAR_BG_ALPHA,
@@ -362,7 +362,7 @@ class Renderer:
             return
 
         sw, sh = state.screenW, state.screenH
-        gh = int(sh * GALLERY_HEIGHT_FRAC)
+        gh = max(int(sh * GALLERY_HEIGHT_FRAC), GALLERY_MIN_HEIGHT_PX)
         y_hidden = sh
         y_visible = sh - gh
         y = int(clamp(state.gallery_y, y_visible, y_hidden))

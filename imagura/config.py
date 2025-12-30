@@ -112,5 +112,11 @@ BG_MODES = [
     {"color": (255, 255, 255), "opacity": 0.5, "blur": True},
 ]
 
+# Window constraints
+MIN_WINDOW_WIDTH = 400
+MIN_WINDOW_HEIGHT = 300
+NAV_EDGE_MIN_PX = 60  # Minimum navigation zone width in pixels
+GALLERY_MIN_HEIGHT_PX = 80  # Minimum gallery height in pixels
+
 # Supported image extensions
 IMG_EXTS = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".qoi"})

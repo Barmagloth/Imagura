@@ -46,6 +46,7 @@ from imagura.config import (
     KEY_ZOOM_IN, KEY_ZOOM_IN_ALT, KEY_ZOOM_OUT, KEY_ZOOM_OUT_ALT, KEY_TOGGLE_ZOOM,
     KEY_NEXT_IMAGE, KEY_NEXT_IMAGE_ALT, KEY_PREV_IMAGE, KEY_PREV_IMAGE_ALT, KEY_CLOSE,
     KEY_TOGGLE_WINDOW,
+    MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT, NAV_EDGE_MIN_PX, GALLERY_MIN_HEIGHT_PX,
 )
 from imagura.math_utils import clamp, lerp, ease_out_quad, ease_in_out_cubic
 from imagura.rl_compat import (
@@ -304,8 +305,8 @@ def toggle_window_mode(state: AppState):
         win_h = min(win_h, available_h)
 
         # Ensure minimum reasonable size
-        win_w = max(win_w, 200)
-        win_h = max(win_h, 200)
+        win_w = max(win_w, MIN_WINDOW_WIDTH)
+        win_h = max(win_h, MIN_WINDOW_HEIGHT)
 
         # Center window on work area
         win_x = work_x + (work_w - win_w) // 2
@@ -315,6 +316,8 @@ def toggle_window_mode(state: AppState):
         try:
             rl.ClearWindowState(rl.FLAG_WINDOW_UNDECORATED)
             rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE)
+            # Set minimum window size to prevent UI issues
+            rl.SetWindowMinSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
         except Exception:
             pass
 
@@ -331,6 +334,7 @@ def toggle_window_mode(state: AppState):
         # Recalculate view for new window size
         if state.cache.curr:
             state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+            state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
 
         # Re-apply blur effect with new hwnd if needed
         state.hwnd = get_window_handle_from_raylib()
@@ -352,14 +356,21 @@ def toggle_window_mode(state: AppState):
             pass
 
         # Restore fullscreen size and position
+        # Always get current work area to validate saved values
+        current_work_x, current_work_y, current_work_w, current_work_h = get_work_area()
+
         work_x = state.window.fullscreen_x
         work_y = state.window.fullscreen_y
         work_w = state.window.fullscreen_w
         work_h = state.window.fullscreen_h
 
-        # Fallback to current work area if saved values are invalid
-        if work_w == 0 or work_h == 0:
-            work_x, work_y, work_w, work_h = get_work_area()
+        # Use current work area if saved values are invalid or outdated
+        # (e.g., monitor changed, resolution changed, taskbar moved)
+        if (work_w == 0 or work_h == 0 or
+            work_w != current_work_w or work_h != current_work_h or
+            work_x != current_work_x or work_y != current_work_y):
+            work_x, work_y = current_work_x, current_work_y
+            work_w, work_h = current_work_w, current_work_h
 
         try:
             rl.SetWindowSize(work_w, work_h)
@@ -373,6 +384,7 @@ def toggle_window_mode(state: AppState):
         # Recalculate view for restored window size
         if state.cache.curr:
             state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+            state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
 
         # Re-apply blur effect
         state.hwnd = get_window_handle_from_raylib()
@@ -2011,8 +2023,13 @@ def build_thumb_from_image(img, target_h: int, src_path: str) -> BitmapThumb:
         return BitmapThumb(None, (0, 0), src_path, False)
 
 
+def get_gallery_height(screen_h: int) -> int:
+    """Calculate gallery height with minimum constraint."""
+    return max(int(screen_h * GALLERY_HEIGHT_FRAC), GALLERY_MIN_HEIGHT_PX)
+
+
 def process_thumb_queue(state: AppState):
-    target_h = int(state.screenH * GALLERY_HEIGHT_FRAC * 0.8)
+    target_h = int(get_gallery_height(state.screenH) * 0.8)
     budget = THUMB_BUILD_BUDGET_PER_FRAME
 
     while budget > 0 and state.thumb_queue:
@@ -2091,7 +2108,7 @@ def reconcile_gallery_target(state: AppState):
 
 def update_gallery_visibility_and_slide(state: AppState):
     mouse = rl.GetMousePosition()
-    gh = int(state.screenH * GALLERY_HEIGHT_FRAC)
+    gh = get_gallery_height(state.screenH)
     y_hidden = state.screenH
     y_visible = state.screenH - gh
     in_trigger = (mouse.y >= state.screenH * (1.0 - GALLERY_TRIGGER_FRAC))
@@ -2113,7 +2130,7 @@ def update_gallery_visibility_and_slide(state: AppState):
 
 def is_mouse_over_gallery(state: AppState) -> bool:
     mouse = rl.GetMousePosition()
-    gh = int(state.screenH * GALLERY_HEIGHT_FRAC)
+    gh = get_gallery_height(state.screenH)
     y_visible = state.screenH - gh
     return y_visible <= mouse.y <= state.screenH and state.gallery_y < state.screenH
 
@@ -2124,7 +2141,7 @@ def render_gallery(state: AppState):
         return
 
     sw, sh = state.screenW, state.screenH
-    gh = int(sh * GALLERY_HEIGHT_FRAC)
+    gh = get_gallery_height(sh)
     y_hidden = sh
     y_visible = sh - gh
     state.gallery_y = clamp(state.gallery_y, y_visible, y_hidden)
@@ -2682,6 +2699,18 @@ def main():
             if should_close:
                 break
 
+            # Handle window resize in windowed mode
+            if state.windowed_mode and rl.IsWindowResized():
+                new_w = rl.GetScreenWidth()
+                new_h = rl.GetScreenHeight()
+                if new_w != state.screenW or new_h != state.screenH:
+                    state.screenW = new_w
+                    state.screenH = new_h
+                    if state.cache.curr:
+                        state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+                        state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+                    log(f"[WINDOW] Resized to {state.screenW}x{state.screenH}")
+
             # Handle settings window input first (blocks other input when visible)
             if state.ui.settings.visible:
                 handle_settings_input(state)
@@ -2834,10 +2863,11 @@ def main():
                         save_view_for_path(state, path, nv)
                         state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
-            # Double-click zone: everywhere except navigation edges (10% on each side)
-            edge_margin = 0.10
-            not_on_edge = (mouse.x > state.screenW * edge_margin and
-                          mouse.x < state.screenW * (1 - edge_margin))
+            # Double-click zone: everywhere except navigation edges
+            # Use adaptive edge zones: at least NAV_EDGE_MIN_PX or 10% of screen
+            edge_zone = max(state.screenW * 0.10, NAV_EDGE_MIN_PX)
+            not_on_edge = (mouse.x > edge_zone and
+                          mouse.x < state.screenW - edge_zone)
 
             if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
                 start_toggle_zoom_animation(state)
@@ -2890,8 +2920,10 @@ def main():
                     state.view = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
 
             if not state.open_anim_active:
-                edge_left = (mouse.x <= state.screenW * 0.10)
-                edge_right = (mouse.x >= state.screenW * 0.90)
+                # Use adaptive edge zones for navigation
+                nav_edge = max(state.screenW * 0.10, NAV_EDGE_MIN_PX)
+                edge_left = (mouse.x <= nav_edge)
+                edge_right = (mouse.x >= state.screenW - nav_edge)
 
                 # Navigation with key repeat support
                 current_time = now()
@@ -2939,7 +2971,7 @@ def main():
                 zoom_threshold = state.last_fit_view.scale * 1.1
                 is_significantly_zoomed = state.view.scale > zoom_threshold
 
-                gh = int(state.screenH * GALLERY_HEIGHT_FRAC)
+                gh = get_gallery_height(state.screenH)
                 yv = state.screenH - gh
                 in_gallery_panel = (yv <= mouse.y <= state.screenH)
 
