@@ -2114,7 +2114,9 @@ def update_gallery_visibility_and_slide(state: AppState):
     y_hidden = state.screenH
     y_visible = state.screenH - gh
     in_trigger = (mouse.y >= state.screenH * (1.0 - GALLERY_TRIGGER_FRAC))
-    in_panel = (y_visible <= mouse.y <= y_hidden)
+    # Check if mouse is in the current gallery panel area (based on current position)
+    current_panel_top = state.gallery_y
+    in_panel = (current_panel_top <= mouse.y <= y_hidden) and state.gallery_y < y_hidden
     want_show = in_trigger or in_panel
     state.gallery_visible = want_show
     cur = state.gallery_y
@@ -2123,7 +2125,10 @@ def update_gallery_visibility_and_slide(state: AppState):
         # Instant transition when slide time is 0
         state.gallery_y = tgt
     else:
-        step = (gh / (GALLERY_SLIDE_MS / 1000.0)) / TARGET_FPS
+        # Use real delta time for smooth animation
+        dt = rl.GetFrameTime()
+        speed = gh / (GALLERY_SLIDE_MS / 1000.0)  # pixels per second
+        step = speed * dt
         if abs(cur - tgt) <= step:
             state.gallery_y = tgt
         else:
@@ -2146,8 +2151,8 @@ def render_gallery(state: AppState):
     gh = get_gallery_height(sh)
     y_hidden = sh
     y_visible = sh - gh
-    state.gallery_y = clamp(state.gallery_y, y_visible, y_hidden)
-    y = int(state.gallery_y)
+    # Don't overwrite state.gallery_y - just clamp for drawing
+    y = int(clamp(state.gallery_y, y_visible, y_hidden))
 
     denom = y_hidden - y_visible
     alpha_panel = 1.0 - ((state.gallery_y - y_visible) / denom) if denom > 0 else 1.0
@@ -2702,12 +2707,14 @@ def main():
                 break
 
             # Handle window resize in windowed mode
-            if state.windowed_mode and rl.IsWindowResized():
+            # Only update screen dimensions - view will adapt automatically
+            if state.windowed_mode:
                 new_w = rl.GetScreenWidth()
                 new_h = rl.GetScreenHeight()
                 if new_w != state.screenW or new_h != state.screenH:
                     state.screenW = new_w
                     state.screenH = new_h
+                    # Recalculate view to fit new window size
                     if state.cache.curr:
                         new_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
                         state.view = new_view
