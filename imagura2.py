@@ -26,7 +26,7 @@ import imagura.config as cfg  # For dynamic access to config values
 from imagura.config import (
     TARGET_FPS, ASYNC_WORKERS,
     ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS, ANIM_TOGGLE_ZOOM_MS,
-    ANIM_OPEN_MS, ANIM_ZOOM_MS, GALLERY_SLIDE_MS,
+    ANIM_OPEN_MS, ANIM_ZOOM_MS,
     FIT_DEFAULT_SCALE, FIT_OPEN_SCALE, OPEN_ALPHA_START,
     ZOOM_STEP_KEYS, ZOOM_STEP_WHEEL, MAX_ZOOM,
     CLOSE_BTN_RADIUS, CLOSE_BTN_MARGIN, CLOSE_BTN_ALPHA_MIN,
@@ -1421,7 +1421,7 @@ SETTINGS_ITEMS = [
     ("ANIM_SWITCH_KEYS_MS", "ANIM_SWITCH_KEYS_MS", int, 0, 2000),
     ("ANIM_OPEN_MS", "ANIM_OPEN_MS", int, 0, 2000),
     ("ANIM_ZOOM_MS", "ANIM_ZOOM_MS", int, 0, 500),
-    ("GALLERY_SLIDE_MS", "GALLERY_SLIDE_MS", int, 0, 500),
+    ("GALLERY_SLIDE_MS", "GALLERY_SLIDE_MS", int, None, None),
     ("Zoom", None, None, None, None),  # Section header
     ("ZOOM_STEP_KEYS", "ZOOM_STEP_KEYS", float, 0.001, 0.1),
     ("ZOOM_STEP_WHEEL", "ZOOM_STEP_WHEEL", float, 0.01, 0.5),
@@ -2121,13 +2121,14 @@ def update_gallery_visibility_and_slide(state: AppState):
     state.gallery_visible = want_show
     cur = state.gallery_y
     tgt = y_visible if want_show else y_hidden
-    if GALLERY_SLIDE_MS <= 0:
+    slide_ms = cfg.GALLERY_SLIDE_MS  # Use cfg to get live value from settings
+    if slide_ms <= 0:
         # Instant transition when slide time is 0
         state.gallery_y = tgt
     else:
         # Use real delta time for smooth animation
         dt = rl.GetFrameTime()
-        speed = gh / (GALLERY_SLIDE_MS / 1000.0)  # pixels per second
+        speed = gh / (slide_ms / 1000.0)  # pixels per second
         step = speed * dt
         if abs(cur - tgt) <= step:
             state.gallery_y = tgt
