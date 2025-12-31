@@ -12,7 +12,7 @@ ANIM_SWITCH_GALLERY_MS = 10
 ANIM_TOGGLE_ZOOM_MS = 150
 ANIM_OPEN_MS = 300
 ANIM_ZOOM_MS = 150
-GALLERY_SLIDE_MS = 0
+GALLERY_SLIDE_MS = 150  # Animation time for gallery slide in/out
 
 # View defaults
 FIT_DEFAULT_SCALE = 0.95
@@ -91,6 +91,7 @@ KEY_CLOSE = 256             # KEY_ESCAPE
 
 # Top toolbar
 TOOLBAR_TRIGGER_FRAC = 0.05  # Top 5% triggers toolbar
+TOOLBAR_TRIGGER_MIN_PX = 60  # Minimum trigger zone height in pixels
 TOOLBAR_HEIGHT = 60
 TOOLBAR_BTN_RADIUS = 24
 TOOLBAR_BTN_SPACING = 20

@@ -38,7 +38,7 @@ from imagura.config import (
     THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
     DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
     KEY_REPEAT_DELAY, KEY_REPEAT_INTERVAL,
-    TOOLBAR_TRIGGER_FRAC, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
+    TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
     TOOLBAR_BG_ALPHA, TOOLBAR_SLIDE_MS,
     MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING, MENU_BG_ALPHA, MENU_HOVER_ALPHA,
     FONT_SIZE, FONT_ANTIALIAS,
@@ -1076,7 +1076,9 @@ def get_toolbar_panel_bounds(state: AppState) -> tuple:
 
 def is_in_toolbar_zone(state: AppState, mouse_x: float, mouse_y: float) -> bool:
     """Check if mouse is in toolbar trigger zone (within panel bounds)."""
-    if mouse_y >= state.screenH * TOOLBAR_TRIGGER_FRAC:
+    # Use adaptive trigger zone: at least TOOLBAR_TRIGGER_MIN_PX or 5% of screen
+    trigger_height = max(state.screenH * TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX)
+    if mouse_y >= trigger_height:
         return False
     panel_x, panel_width = get_toolbar_panel_bounds(state)
     return panel_x <= mouse_x <= panel_x + panel_width
@@ -2164,6 +2166,15 @@ def render_gallery(state: AppState):
     center_idx = int(state.gallery_center_index)
     thumb_positions[center_idx] = 0.0
 
+    # Helper to get scaled width for a thumbnail
+    def get_thumb_width(bt, distance_scale):
+        if bt and bt.ready and bt.texture and bt.size[1] > 0:
+            # Scale to fit current gallery height, then apply distance scale
+            fit_scale = base_thumb_h / bt.size[1]
+            return int(bt.size[0] * fit_scale * distance_scale)
+        else:
+            return int(base_thumb_h * 1.4 * distance_scale)
+
     cumulative_offset = 0.0
     for idx in range(center_idx - 1, start_idx - 1, -1):
         p = state.current_dir_images[idx]
@@ -2171,20 +2182,14 @@ def render_gallery(state: AppState):
 
         distance = abs(idx - state.gallery_center_index)
         scale_factor = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, distance / visible_range))
-        if bt and bt.ready and bt.texture:
-            w_curr = int(bt.size[0] * scale_factor)
-        else:
-            w_curr = int(base_thumb_h * 1.4 * scale_factor)
+        w_curr = get_thumb_width(bt, scale_factor)
 
         next_idx = idx + 1
         next_p = state.current_dir_images[next_idx]
         next_bt = state.thumb_cache.get(next_p)
         next_distance = abs(next_idx - state.gallery_center_index)
         next_scale = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, next_distance / visible_range))
-        if next_bt and next_bt.ready and next_bt.texture:
-            w_next = int(next_bt.size[0] * next_scale)
-        else:
-            w_next = int(base_thumb_h * 1.4 * next_scale)
+        w_next = get_thumb_width(next_bt, next_scale)
 
         cumulative_offset -= (w_curr / 2.0 + GALLERY_THUMB_SPACING + w_next / 2.0)
         thumb_positions[idx] = cumulative_offset
@@ -2196,20 +2201,14 @@ def render_gallery(state: AppState):
 
         distance = abs(idx - state.gallery_center_index)
         scale_factor = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, distance / visible_range))
-        if bt and bt.ready and bt.texture:
-            w_curr = int(bt.size[0] * scale_factor)
-        else:
-            w_curr = int(base_thumb_h * 1.4 * scale_factor)
+        w_curr = get_thumb_width(bt, scale_factor)
 
         prev_idx = idx - 1
         prev_p = state.current_dir_images[prev_idx]
         prev_bt = state.thumb_cache.get(prev_p)
         prev_distance = abs(prev_idx - state.gallery_center_index)
         prev_scale = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, prev_distance / visible_range))
-        if prev_bt and prev_bt.ready and prev_bt.texture:
-            w_prev = int(prev_bt.size[0] * prev_scale)
-        else:
-            w_prev = int(base_thumb_h * 1.4 * prev_scale)
+        w_prev = get_thumb_width(prev_bt, prev_scale)
 
         cumulative_offset += (w_prev / 2.0 + GALLERY_THUMB_SPACING + w_curr / 2.0)
         thumb_positions[idx] = cumulative_offset
@@ -2231,9 +2230,12 @@ def render_gallery(state: AppState):
         scale_factor = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, distance / visible_range))
         alpha_factor = lerp(1.0, GALLERY_MIN_ALPHA, min(1.0, distance / visible_range))
 
-        if bt and bt.ready and bt.texture and getattr(bt.texture, 'id', 0):
-            scaled_w = int(bt.size[0] * scale_factor)
-            scaled_h = int(bt.size[1] * scale_factor)
+        if bt and bt.ready and bt.texture and getattr(bt.texture, 'id', 0) and bt.size[1] > 0:
+            # Scale to fit current gallery height, then apply distance scale
+            fit_scale = base_thumb_h / bt.size[1]
+            total_scale = fit_scale * scale_factor
+            scaled_w = int(bt.size[0] * total_scale)
+            scaled_h = int(bt.size[1] * total_scale)
 
             thumb_center_x = center_x + int(thumb_positions[idx] - offset_adjust)
             thumb_x = thumb_center_x - scaled_w // 2
@@ -2707,9 +2709,9 @@ def main():
                     state.screenW = new_w
                     state.screenH = new_h
                     if state.cache.curr:
-                        state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
-                        state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
-                    log(f"[WINDOW] Resized to {state.screenW}x{state.screenH}")
+                        new_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+                        state.view = new_view
+                        state.last_fit_view = new_view
 
             # Handle settings window input first (blocks other input when visible)
             if state.ui.settings.visible:
