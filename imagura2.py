@@ -312,6 +312,17 @@ def toggle_window_mode(state: AppState):
         win_x = work_x + (work_w - win_w) // 2
         win_y = work_y + (work_h - win_h) // 2
 
+        # Ensure window doesn't go above work area (account for title bar)
+        # The title bar is part of the window, so we need to make sure
+        # the entire window including title bar stays within work area
+        if win_y < work_y:
+            win_y = work_y
+        # Also ensure window doesn't go below work area
+        if win_y + win_h + title_bar_h > work_y + work_h:
+            win_y = work_y + work_h - win_h - title_bar_h
+            if win_y < work_y:
+                win_y = work_y
+
         # First clear undecorated flag and set resizable
         try:
             rl.ClearWindowState(rl.FLAG_WINDOW_UNDECORATED)
@@ -1689,15 +1700,19 @@ def handle_settings_input(state: AppState) -> bool:
     win_x = (state.screenW - win_w) // 2
     win_y = (state.screenH - win_h) // 2
 
+    # Font size for tab measurement
+    font_size = max(16, min(22, cfg.FONT_DISPLAY_SIZE - 4))
+    small_font = max(14, font_size - 2)
+
     # Tab bar dimensions
-    tab_h = 36
+    tab_h = 32
     tab_y = win_y + 45
 
     # Content area
-    content_y = tab_y + tab_h + 10
+    content_y = tab_y + tab_h
     item_h = 32
     val_w = 100
-    val_x = win_x + win_w - val_w - 25
+    val_x = win_x + win_w - val_w - 30
 
     # Check close button click
     close_size = 28
@@ -1711,13 +1726,11 @@ def handle_settings_input(state: AppState) -> bool:
             settings.hide()
             return True
 
-        # Tab clicks
+        # Tab clicks - use dynamic tab positions
         if tab_y <= mouse.y <= tab_y + tab_h:
-            tab_count = len(SETTINGS_TABS)
-            tab_w = (win_w - 40) // tab_count
-            for i in range(tab_count):
-                tx = win_x + 20 + i * tab_w
-                if tx <= mouse.x <= tx + tab_w:
+            tab_positions = _get_tab_positions(state, win_x, small_font)
+            for i, (tx, tw) in enumerate(tab_positions):
+                if tx <= mouse.x <= tx + tw:
                     if i != settings.active_tab:
                         # Save current edit before switching tabs
                         if settings.editing_item >= 0:
@@ -1938,6 +1951,7 @@ def draw_settings_window(state: AppState):
 
     font_size = max(16, min(22, cfg.FONT_DISPLAY_SIZE - 4))
     small_font = max(14, font_size - 2)
+    tab_font = small_font
 
     # Darken background overlay
     rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(*colors["overlay"]))
@@ -1946,7 +1960,7 @@ def draw_settings_window(state: AppState):
     shadow_offset = 8
     rl.DrawRectangle(win_x + shadow_offset, win_y + shadow_offset, win_w, win_h, RL_Color(0, 0, 0, 40))
 
-    # Window background with rounded corners effect (using layered rectangles)
+    # Window background
     rl.DrawRectangle(win_x, win_y, win_w, win_h, RL_Color(*colors["window_bg"]))
 
     # Border
@@ -1967,45 +1981,100 @@ def draw_settings_window(state: AppState):
     close_color = colors["close_btn_hover"] if close_hover else colors["close_btn"]
     _draw_settings_text(state, "×", close_x + 6, close_y + 2, font_size + 6, close_color)
 
-    # Tab bar
+    # Tab bar - calculate widths based on text content
     tab_y = win_y + 45
-    tab_h = 36
-    tab_count = len(SETTINGS_TABS)
-    tab_w = (win_w - 40) // tab_count
+    tab_h = 32
+    tab_padding = 16  # Horizontal padding inside each tab
+    tab_gap = 2  # Gap between tabs
 
+    # Measure tab widths
+    tab_widths = []
+    for tab in SETTINGS_TABS:
+        if state.unicode_font:
+            tw = rl.MeasureTextEx(state.unicode_font, tab["name"].encode('utf-8'), tab_font, 1.0).x
+        else:
+            tw = len(tab["name"]) * (tab_font // 2)
+        tab_widths.append(int(tw) + tab_padding * 2)
+
+    # Content area border color
+    border_color = RL_Color(120, 120, 125, 255)  # Dark gray border
+    content_y = tab_y + tab_h
+    content_h = win_h - (content_y - win_y) - 45
+
+    # Draw content area border (bottom and sides, top will be drawn with tabs)
+    content_border_x = win_x + 15
+    content_border_w = win_w - 30
+    # Left border
+    rl.DrawLine(content_border_x, content_y, content_border_x, content_y + content_h, border_color)
+    # Right border
+    rl.DrawLine(content_border_x + content_border_w, content_y,
+                content_border_x + content_border_w, content_y + content_h, border_color)
+    # Bottom border
+    rl.DrawLine(content_border_x, content_y + content_h,
+                content_border_x + content_border_w, content_y + content_h, border_color)
+
+    # Draw tabs with borders
+    tab_x = win_x + 15
     for i, tab in enumerate(SETTINGS_TABS):
-        tx = win_x + 20 + i * tab_w
+        tw = tab_widths[i]
         is_active = (i == settings.active_tab)
 
-        # Tab background
         if is_active:
+            # Active tab - lighter background, no bottom border
             tab_bg = colors["tab_active"]
-            # Active tab indicator line
-            rl.DrawRectangle(tx, tab_y + tab_h - 3, tab_w - 4, 3, RL_Color(*colors["input_active_border"]))
+            rl.DrawRectangle(tab_x, tab_y, tw, tab_h, RL_Color(*tab_bg))
+            # Top border
+            rl.DrawLine(tab_x, tab_y, tab_x + tw, tab_y, border_color)
+            # Left border
+            rl.DrawLine(tab_x, tab_y, tab_x, tab_y + tab_h, border_color)
+            # Right border
+            rl.DrawLine(tab_x + tw, tab_y, tab_x + tw, tab_y + tab_h, border_color)
+            # No bottom border - connects with content
         else:
-            tab_bg = colors["tab_inactive"]
-
-        rl.DrawRectangle(tx, tab_y, tab_w - 4, tab_h - 3, RL_Color(*tab_bg))
+            # Inactive tab - no background, just text
+            # Draw top border line at content level (connects the inactive tab area)
+            pass
 
         # Tab text
         tab_text_color = colors["tab_text_active"] if is_active else colors["tab_text"]
-        text_y = tab_y + (tab_h - small_font) // 2
-        _draw_settings_text(state, tab["name"], tx + 8, text_y, small_font, tab_text_color)
+        text_y = tab_y + (tab_h - tab_font) // 2
+        text_x = tab_x + tab_padding
+        _draw_settings_text(state, tab["name"], text_x, text_y, tab_font, tab_text_color)
+
+        tab_x += tw + tab_gap
+
+    # Draw top border for content area (between tabs)
+    # From left edge to first tab
+    first_tab_x = win_x + 15
+    rl.DrawLine(content_border_x, content_y, first_tab_x, content_y, border_color)
+
+    # Between tabs and after last tab
+    tab_x = win_x + 15
+    for i, tw in enumerate(tab_widths):
+        if i == settings.active_tab:
+            # Skip drawing under active tab
+            pass
+        else:
+            # Draw line under inactive tabs
+            rl.DrawLine(tab_x, content_y, tab_x + tw, content_y, border_color)
+        tab_x += tw + tab_gap
+
+    # From last tab to right edge
+    rl.DrawLine(tab_x - tab_gap, content_y, content_border_x + content_border_w, content_y, border_color)
 
     # Content area
-    content_y = tab_y + tab_h + 10
-    content_h = win_h - (content_y - win_y) - 45
     item_h = 32
-    padding_x = 20
+    padding_x = 25
+    sub_item_padding = 20  # Extra indent for sub-items
     val_w = 100
-    val_x = win_x + win_w - val_w - 25
+    val_x = win_x + win_w - val_w - 30
 
     # Clip content area
-    rl.BeginScissorMode(win_x, content_y, win_w, content_h)
+    rl.BeginScissorMode(win_x + 16, content_y + 1, win_w - 32, content_h - 2)
 
     current_tab = SETTINGS_TABS[settings.active_tab]
     tab_items = current_tab["items"]
-    item_y = content_y - settings.scroll_offset
+    item_y = content_y + 5 - settings.scroll_offset
     editable_idx = 0
 
     for item in tab_items:
@@ -2019,17 +2088,28 @@ def draw_settings_window(state: AppState):
             continue
 
         if config_key is None:
-            # Section header
-            rl.DrawRectangle(win_x + 10, item_y, win_w - 20, item_h, RL_Color(*colors["header_bg"]))
+            # Section header - no background, just text with different color
             _draw_settings_text(state, label, win_x + padding_x, item_y + (item_h - small_font) // 2,
                               small_font, colors["header_text"])
         else:
-            # Config item
+            # Config item with extra indent
             current_val = getattr(cfg, config_key, "?")
             is_editing = (settings.editing_item == editable_idx)
 
-            # Draw label
-            _draw_settings_text(state, label, win_x + padding_x + 10, item_y + (item_h - small_font) // 2,
+            # Check if value is out of range
+            is_out_of_range = False
+            try:
+                val = val_type(current_val) if val_type else current_val
+                if min_val is not None and val < min_val:
+                    is_out_of_range = True
+                if max_val is not None and val > max_val:
+                    is_out_of_range = True
+            except (ValueError, TypeError):
+                pass
+
+            # Draw label with extra indent for sub-items
+            label_x = win_x + padding_x + sub_item_padding
+            _draw_settings_text(state, label, label_x, item_y + (item_h - small_font) // 2,
                               small_font, colors["text_color"])
 
             # Input field area
@@ -2046,13 +2126,24 @@ def draw_settings_window(state: AppState):
                 edit = settings.edit_state
                 text = edit.text
 
+                # Check if editing value is out of range
+                edit_out_of_range = False
+                try:
+                    if text.strip():
+                        test_val = val_type(text) if val_type else text
+                        if min_val is not None and test_val < min_val:
+                            edit_out_of_range = True
+                        if max_val is not None and test_val > max_val:
+                            edit_out_of_range = True
+                except (ValueError, TypeError):
+                    edit_out_of_range = True
+
                 # Draw selection background if any
                 if edit.has_selection():
                     sel_start, sel_end = edit.get_selection_range()
                     text_before_sel = text[:sel_start]
                     text_sel = text[sel_start:sel_end]
 
-                    # Measure text widths
                     start_x = val_x
                     if state.unicode_font and text_before_sel:
                         start_offset = rl.MeasureTextEx(state.unicode_font, text_before_sel.encode('utf-8'),
@@ -2068,9 +2159,10 @@ def draw_settings_window(state: AppState):
                     rl.DrawRectangle(start_x, field_y + 2, int(sel_width), field_h - 4,
                                     RL_Color(*colors["selection_bg"]))
 
-                # Draw text
+                # Draw text - red if out of range
+                text_color = (200, 60, 60, 255) if edit_out_of_range else colors["input_text"]
                 _draw_settings_text(state, text, val_x, item_y + (item_h - small_font) // 2,
-                                  small_font, colors["input_text"])
+                                  small_font, text_color)
 
                 # Draw cursor
                 if int(now() * 2) % 2 == 0:
@@ -2093,8 +2185,10 @@ def draw_settings_window(state: AppState):
                 rl.DrawRectangleLines(field_x, field_y, field_w, field_h, RL_Color(*colors["input_border"]))
 
                 val_str = str(current_val)
+                # Use red color if value is out of range
+                val_color = (200, 60, 60, 255) if is_out_of_range else colors["value_color"]
                 _draw_settings_text(state, val_str, val_x, item_y + (item_h - small_font) // 2,
-                                  small_font, colors["value_color"])
+                                  small_font, val_color)
 
             editable_idx += 1
 
@@ -2107,7 +2201,7 @@ def draw_settings_window(state: AppState):
     if max_scroll > 0:
         scroll_bar_h = max(20, content_h * content_h // (len(tab_items) * item_h))
         scroll_bar_y = content_y + (settings.scroll_offset / max_scroll) * (content_h - scroll_bar_h)
-        rl.DrawRectangle(win_x + win_w - 8, int(scroll_bar_y), 4, int(scroll_bar_h),
+        rl.DrawRectangle(win_x + win_w - 12, int(scroll_bar_y), 4, int(scroll_bar_h),
                         RL_Color(*colors["input_border"]))
 
     # Footer hints
@@ -2130,6 +2224,25 @@ def draw_settings_window(state: AppState):
         hint_x += int(text_width) + 20
         if hint_x > win_x + win_w - 100:
             break
+
+
+def _get_tab_positions(state: AppState, win_x: int, small_font: int) -> list:
+    """Calculate tab positions and widths based on text content."""
+    tab_padding = 16
+    tab_gap = 2
+    tab_positions = []
+    tab_x = win_x + 15
+
+    for tab in SETTINGS_TABS:
+        if state.unicode_font:
+            tw = rl.MeasureTextEx(state.unicode_font, tab["name"].encode('utf-8'), small_font, 1.0).x
+        else:
+            tw = len(tab["name"]) * (small_font // 2)
+        tab_w = int(tw) + tab_padding * 2
+        tab_positions.append((tab_x, tab_w))
+        tab_x += tab_w + tab_gap
+
+    return tab_positions
 
 
 def _draw_settings_text(state: AppState, text: str, x: int, y: int, size: int, color: tuple):
