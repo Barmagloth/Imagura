@@ -3155,7 +3155,8 @@ def main():
                         state.last_fit_view = new_view
 
             # Handle settings window input first (blocks other input when visible)
-            if state.ui.settings.visible:
+            settings_active = state.ui.settings.visible
+            if settings_active:
                 handle_settings_input(state)
 
             rl.BeginDrawing()
@@ -3167,7 +3168,10 @@ def main():
             menu = state.ui.context_menu
             menu_consumed_click = False  # Track if menu consumed the click
 
-            if menu.visible:
+            # When settings menu is open, block all other input
+            if settings_active:
+                menu_consumed_click = True  # Block all clicks
+            elif menu.visible:
                 menu.hover_index = get_context_menu_item_at(state, mouse.x, mouse.y)
 
                 if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
@@ -3229,25 +3233,27 @@ def main():
 
             # ─── Regular Input ──────────────────────────────────────────────────
             # Track if any UI element consumed the click
-            input_consumed = menu_consumed_click or toolbar_consumed_click
+            input_consumed = menu_consumed_click or toolbar_consumed_click or settings_active
 
             if not input_consumed and check_close_button_click(state):
                 break
 
             state.idle_detector.mark_activity()
 
-            if rl.IsKeyPressed(KEY_TOGGLE_HUD):
-                state.show_hud = not state.show_hud
+            # Block all keyboard input when settings menu is open
+            if not settings_active:
+                if rl.IsKeyPressed(KEY_TOGGLE_HUD):
+                    state.show_hud = not state.show_hud
 
-            if rl.IsKeyPressed(KEY_TOGGLE_FILENAME):
-                state.show_filename = not state.show_filename
+                if rl.IsKeyPressed(KEY_TOGGLE_FILENAME):
+                    state.show_filename = not state.show_filename
 
-            if rl.IsKeyPressed(KEY_CYCLE_BG):
-                state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
-                state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
+                if rl.IsKeyPressed(KEY_CYCLE_BG):
+                    state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
+                    state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
 
-            # DEL key - delete image to recycle bin
-            if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active:
+            # DEL key - delete image to recycle bin (NEVER when settings active)
+            if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active and not settings_active:
                 if delete_current_image(state):
                     if len(state.current_dir_images) == 0:
                         # No more images - close app
@@ -3256,7 +3262,7 @@ def main():
                     increment_frame()
                     continue
 
-            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
+            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
                 if rl.IsKeyDown(KEY_ZOOM_IN) or rl.IsKeyDown(KEY_ZOOM_IN_ALT):
                     new_scale = min(state.view.scale * (1.0 + ZOOM_STEP_KEYS), MAX_ZOOM)
                     nv = recompute_view_anchor_zoom(state.view, new_scale,
@@ -3283,7 +3289,8 @@ def main():
                         state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
             wheel = rl.GetMouseWheelMove()
-            if wheel != 0.0 and state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
+            # Mouse wheel zoom - blocked when settings menu is open (settings has its own scroll)
+            if wheel != 0.0 and state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
                 if is_mouse_over_gallery(state):
                     n = len(state.current_dir_images)
                     base = state.gallery_target_index if state.gallery_target_index is not None else state.index
@@ -3312,12 +3319,13 @@ def main():
             not_on_edge = (mouse.x > edge_zone and
                           mouse.x < state.screenW - edge_zone)
 
-            if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
-                start_toggle_zoom_animation(state)
+            if not settings_active:
+                if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
+                    start_toggle_zoom_animation(state)
 
-            # Toggle window mode (F key)
-            if rl.IsKeyPressed(KEY_TOGGLE_WINDOW):
-                toggle_window_mode(state)
+                # Toggle window mode (F key)
+                if rl.IsKeyPressed(KEY_TOGGLE_WINDOW):
+                    toggle_window_mode(state)
 
             # Always track clicks for double-click detection, even during animation
             if not_on_edge and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not input_consumed:
@@ -3325,7 +3333,7 @@ def main():
                 if is_double and not state.toggle_zoom_active:
                     start_toggle_zoom_animation(state)
 
-            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active:
+            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
                 img_rect = RL_Rect(state.view.offx, state.view.offy, state.cache.curr.w * state.view.scale,
                                    state.cache.curr.h * state.view.scale)
                 over_img = (
@@ -3362,7 +3370,7 @@ def main():
                                     offy=state.pan_start_offset[1] + dy)
                     state.view = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
 
-            if not state.open_anim_active:
+            if not state.open_anim_active and not settings_active:
                 # Use adaptive edge zones for navigation
                 nav_edge = max(state.screenW * 0.10, NAV_EDGE_MIN_PX)
                 edge_left = (mouse.x <= nav_edge)
