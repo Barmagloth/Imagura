@@ -308,23 +308,25 @@ def toggle_window_mode(state: AppState):
         win_w = max(win_w, MIN_WINDOW_WIDTH)
         win_h = max(win_h, MIN_WINDOW_HEIGHT)
 
-        # Total window height including title bar
-        total_win_h = win_h + title_bar_h
+        # Center window on work area
+        # Note: SetWindowPosition sets the position of the CLIENT area, not the whole window
+        # So we need to account for the title bar being ABOVE the client area
+        win_x = work_x + (work_w - win_w) // 2
+        win_y = work_y + (work_h - win_h) // 2
 
-        # Center window on work area (accounting for full window size with decorations)
-        win_x = work_x + (work_w - win_w - border_w * 2) // 2
-        win_y = work_y + (work_h - total_win_h) // 2
+        # Ensure the title bar (above client area) stays within work area
+        # The title bar starts at (win_y - title_bar_h), so we need win_y >= work_y + title_bar_h
+        min_y = work_y + title_bar_h
+        max_y = work_y + work_h - win_h
 
-        # Ensure window stays within work area bounds
-        # win_y is the position of the top of the window (including title bar)
-        if win_y < work_y:
-            win_y = work_y
-        if win_y + total_win_h > work_y + work_h:
-            win_y = work_y + work_h - total_win_h
+        if win_y < min_y:
+            win_y = min_y
+        if win_y > max_y:
+            win_y = max_y
         if win_x < work_x:
             win_x = work_x
-        if win_x + win_w + border_w * 2 > work_x + work_w:
-            win_x = work_x + work_w - win_w - border_w * 2
+        if win_x + win_w > work_x + work_w:
+            win_x = work_x + work_w - win_w
 
         # First clear undecorated flag and set resizable
         try:
