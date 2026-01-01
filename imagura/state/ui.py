@@ -97,13 +97,160 @@ class ToolbarState:
 
 
 @dataclass
+class TextEditState:
+    """State for a text input field with full editing support."""
+    text: str = ""
+    cursor_pos: int = 0  # Position of cursor in text
+    selection_start: int = -1  # -1 means no selection
+    selection_end: int = -1
+
+    def has_selection(self) -> bool:
+        """Check if there's active text selection."""
+        return self.selection_start >= 0 and self.selection_end >= 0 and self.selection_start != self.selection_end
+
+    def get_selection_range(self) -> Tuple[int, int]:
+        """Get normalized selection range (start, end) where start <= end."""
+        if not self.has_selection():
+            return (self.cursor_pos, self.cursor_pos)
+        return (min(self.selection_start, self.selection_end),
+                max(self.selection_start, self.selection_end))
+
+    def get_selected_text(self) -> str:
+        """Get selected text."""
+        if not self.has_selection():
+            return ""
+        start, end = self.get_selection_range()
+        return self.text[start:end]
+
+    def delete_selection(self) -> None:
+        """Delete selected text."""
+        if not self.has_selection():
+            return
+        start, end = self.get_selection_range()
+        self.text = self.text[:start] + self.text[end:]
+        self.cursor_pos = start
+        self.clear_selection()
+
+    def clear_selection(self) -> None:
+        """Clear text selection."""
+        self.selection_start = -1
+        self.selection_end = -1
+
+    def select_all(self) -> None:
+        """Select all text."""
+        self.selection_start = 0
+        self.selection_end = len(self.text)
+        self.cursor_pos = len(self.text)
+
+    def insert_text(self, text: str) -> None:
+        """Insert text at cursor, replacing selection if any."""
+        if self.has_selection():
+            self.delete_selection()
+        self.text = self.text[:self.cursor_pos] + text + self.text[self.cursor_pos:]
+        self.cursor_pos += len(text)
+
+    def delete_char_before(self) -> None:
+        """Delete character before cursor (backspace)."""
+        if self.has_selection():
+            self.delete_selection()
+        elif self.cursor_pos > 0:
+            self.text = self.text[:self.cursor_pos - 1] + self.text[self.cursor_pos:]
+            self.cursor_pos -= 1
+
+    def delete_char_after(self) -> None:
+        """Delete character after cursor (delete key)."""
+        if self.has_selection():
+            self.delete_selection()
+        elif self.cursor_pos < len(self.text):
+            self.text = self.text[:self.cursor_pos] + self.text[self.cursor_pos + 1:]
+
+    def move_cursor_left(self, select: bool = False) -> None:
+        """Move cursor left, optionally extending selection."""
+        if select:
+            if self.selection_start < 0:
+                self.selection_start = self.cursor_pos
+                self.selection_end = self.cursor_pos
+            if self.cursor_pos > 0:
+                self.cursor_pos -= 1
+                self.selection_end = self.cursor_pos
+        else:
+            if self.has_selection():
+                self.cursor_pos = min(self.selection_start, self.selection_end)
+                self.clear_selection()
+            elif self.cursor_pos > 0:
+                self.cursor_pos -= 1
+
+    def move_cursor_right(self, select: bool = False) -> None:
+        """Move cursor right, optionally extending selection."""
+        if select:
+            if self.selection_start < 0:
+                self.selection_start = self.cursor_pos
+                self.selection_end = self.cursor_pos
+            if self.cursor_pos < len(self.text):
+                self.cursor_pos += 1
+                self.selection_end = self.cursor_pos
+        else:
+            if self.has_selection():
+                self.cursor_pos = max(self.selection_start, self.selection_end)
+                self.clear_selection()
+            elif self.cursor_pos < len(self.text):
+                self.cursor_pos += 1
+
+    def move_cursor_home(self, select: bool = False) -> None:
+        """Move cursor to start of text."""
+        if select:
+            if self.selection_start < 0:
+                self.selection_start = self.cursor_pos
+                self.selection_end = self.cursor_pos
+            self.cursor_pos = 0
+            self.selection_end = 0
+        else:
+            self.clear_selection()
+            self.cursor_pos = 0
+
+    def move_cursor_end(self, select: bool = False) -> None:
+        """Move cursor to end of text."""
+        if select:
+            if self.selection_start < 0:
+                self.selection_start = self.cursor_pos
+                self.selection_end = self.cursor_pos
+            self.cursor_pos = len(self.text)
+            self.selection_end = len(self.text)
+        else:
+            self.clear_selection()
+            self.cursor_pos = len(self.text)
+
+    def set_text(self, text: str) -> None:
+        """Set text and position cursor at end."""
+        self.text = text
+        self.cursor_pos = len(text)
+        self.clear_selection()
+
+    def reset(self) -> None:
+        """Reset to empty state."""
+        self.text = ""
+        self.cursor_pos = 0
+        self.clear_selection()
+
+
+@dataclass
 class SettingsState:
     """State for settings window."""
     visible: bool = False
     scroll_offset: int = 0
     hover_item: int = -1
     editing_item: int = -1
-    edit_value: str = ""
+    edit_state: TextEditState = field(default_factory=TextEditState)
+    active_tab: int = 0  # Currently active tab index
+
+    # Legacy property for compatibility
+    @property
+    def edit_value(self) -> str:
+        return self.edit_state.text
+
+    @edit_value.setter
+    def edit_value(self, value: str) -> None:
+        self.edit_state.set_text(value)
 
     def show(self) -> None:
         """Show settings window."""
@@ -111,11 +258,14 @@ class SettingsState:
         self.scroll_offset = 0
         self.hover_item = -1
         self.editing_item = -1
+        self.edit_state.reset()
+        self.active_tab = 0
 
     def hide(self) -> None:
         """Hide settings window."""
         self.visible = False
         self.editing_item = -1
+        self.edit_state.reset()
 
 
 @dataclass
