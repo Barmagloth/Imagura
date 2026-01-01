@@ -308,20 +308,23 @@ def toggle_window_mode(state: AppState):
         win_w = max(win_w, MIN_WINDOW_WIDTH)
         win_h = max(win_h, MIN_WINDOW_HEIGHT)
 
-        # Center window on work area
-        win_x = work_x + (work_w - win_w) // 2
-        win_y = work_y + (work_h - win_h) // 2
+        # Total window height including title bar
+        total_win_h = win_h + title_bar_h
 
-        # Ensure window doesn't go above work area (account for title bar)
-        # The title bar is part of the window, so we need to make sure
-        # the entire window including title bar stays within work area
+        # Center window on work area (accounting for full window size with decorations)
+        win_x = work_x + (work_w - win_w - border_w * 2) // 2
+        win_y = work_y + (work_h - total_win_h) // 2
+
+        # Ensure window stays within work area bounds
+        # win_y is the position of the top of the window (including title bar)
         if win_y < work_y:
             win_y = work_y
-        # Also ensure window doesn't go below work area
-        if win_y + win_h + title_bar_h > work_y + work_h:
-            win_y = work_y + work_h - win_h - title_bar_h
-            if win_y < work_y:
-                win_y = work_y
+        if win_y + total_win_h > work_y + work_h:
+            win_y = work_y + work_h - total_win_h
+        if win_x < work_x:
+            win_x = work_x
+        if win_x + win_w + border_w * 2 > work_x + work_w:
+            win_x = work_x + work_w - win_w - border_w * 2
 
         # First clear undecorated flag and set resizable
         try:
@@ -1979,7 +1982,7 @@ def draw_settings_window(state: AppState):
                    close_y <= mouse.y <= close_y + close_size)
 
     close_color = colors["close_btn_hover"] if close_hover else colors["close_btn"]
-    _draw_settings_text(state, "×", close_x + 6, close_y + 2, font_size + 6, close_color)
+    _draw_settings_text(state, "X", close_x + 8, close_y + 2, font_size + 4, close_color)
 
     # Tab bar - calculate widths based on text content
     tab_y = win_y + 45
