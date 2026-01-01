@@ -856,12 +856,8 @@ def get_zoom_mode_label(state: AppState) -> str:
 
 
 def get_filename_text_color(state: AppState):
-    mode = BG_MODES[state.bg_mode_index]
-    bg_color = mode["color"]
-    if bg_color == (0, 0, 0):
-        return RL_Color(255, 255, 255, 255)
-    else:
-        return RL_Color(0, 0, 0, 255)
+    # Always white - shadow provides contrast on light backgrounds
+    return RL_Color(255, 255, 255, 255)
 
 
 def draw_filename(state: AppState):
