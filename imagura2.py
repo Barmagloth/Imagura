@@ -1407,23 +1407,102 @@ def draw_context_menu(state: AppState):
         item_y += MENU_ITEM_HEIGHT
 
 
-# Settings window configuration items
+# Settings window configuration - organized by tabs
 # Format: (display_label, config_key, value_type, min_val, max_val)
-SETTINGS_ITEMS = [
-    ("Performance", None, None, None, None),  # Section header
-    ("TARGET_FPS", "TARGET_FPS", int, 30, 240),
-    ("ASYNC_WORKERS", "ASYNC_WORKERS", int, 1, 32),
-    ("Animation (ms)", None, None, None, None),  # Section header
-    ("ANIM_SWITCH_KEYS_MS", "ANIM_SWITCH_KEYS_MS", int, 0, 2000),
-    ("ANIM_OPEN_MS", "ANIM_OPEN_MS", int, 0, 2000),
-    ("ANIM_ZOOM_MS", "ANIM_ZOOM_MS", int, 0, 500),
-    ("GALLERY_SLIDE_MS", "GALLERY_SLIDE_MS", int, None, None),
-    ("Zoom", None, None, None, None),  # Section header
-    ("ZOOM_STEP_KEYS", "ZOOM_STEP_KEYS", float, 0.001, 0.1),
-    ("ZOOM_STEP_WHEEL", "ZOOM_STEP_WHEEL", float, 0.01, 0.5),
-    ("Font", None, None, None, None),  # Section header
-    ("FONT_DISPLAY_SIZE", "FONT_DISPLAY_SIZE", int, 12, 72),
+# If config_key is None, it's a section header
+
+SETTINGS_TABS = [
+    {
+        "name": "Общие",
+        "items": [
+            ("Производительность", None, None, None, None),
+            ("Целевой FPS", "TARGET_FPS", int, 30, 240),
+            ("Асинхронные потоки", "ASYNC_WORKERS", int, 1, 32),
+            ("Масштабирование", None, None, None, None),
+            ("Масштаб по умолчанию", "FIT_DEFAULT_SCALE", float, 0.5, 1.0),
+            ("Масштаб при открытии", "FIT_OPEN_SCALE", float, 0.3, 1.0),
+            ("Макс. зум", "MAX_ZOOM", float, 5.0, 50.0),
+            ("Шаг зума (клавиши)", "ZOOM_STEP_KEYS", float, 0.01, 0.2),
+            ("Шаг зума (колесо)", "ZOOM_STEP_WHEEL", float, 0.01, 0.5),
+        ]
+    },
+    {
+        "name": "Анимация",
+        "items": [
+            ("Время анимации (мс)", None, None, None, None),
+            ("Переключение (клавиши)", "ANIM_SWITCH_KEYS_MS", int, 0, 2000),
+            ("Переключение (галерея)", "ANIM_SWITCH_GALLERY_MS", int, 0, 500),
+            ("Открытие изображения", "ANIM_OPEN_MS", int, 0, 2000),
+            ("Анимация зума", "ANIM_ZOOM_MS", int, 0, 500),
+            ("Переключение зума", "ANIM_TOGGLE_ZOOM_MS", int, 0, 500),
+            ("Слайд галереи", "GALLERY_SLIDE_MS", int, 0, 500),
+            ("Слайд тулбара", "TOOLBAR_SLIDE_MS", int, 0, 500),
+        ]
+    },
+    {
+        "name": "Интерфейс",
+        "items": [
+            ("Шрифт", None, None, None, None),
+            ("Размер шрифта", "FONT_DISPLAY_SIZE", int, 12, 72),
+            ("Тулбар", None, None, None, None),
+            ("Высота тулбара", "TOOLBAR_HEIGHT", int, 40, 100),
+            ("Радиус кнопок", "TOOLBAR_BTN_RADIUS", int, 16, 40),
+            ("Отступ кнопок", "TOOLBAR_BTN_SPACING", int, 10, 40),
+            ("Прозрачность фона", "TOOLBAR_BG_ALPHA", float, 0.3, 1.0),
+            ("Кнопка закрытия", None, None, None, None),
+            ("Радиус кнопки", "CLOSE_BTN_RADIUS", int, 16, 50),
+            ("Отступ от края", "CLOSE_BTN_MARGIN", int, 10, 50),
+        ]
+    },
+    {
+        "name": "Галерея",
+        "items": [
+            ("Размеры", None, None, None, None),
+            ("Высота (доля экрана)", "GALLERY_HEIGHT_FRAC", float, 0.05, 0.3),
+            ("Зона активации (доля)", "GALLERY_TRIGGER_FRAC", float, 0.02, 0.15),
+            ("Отступ миниатюр", "GALLERY_THUMB_SPACING", int, 5, 50),
+            ("Мин. масштаб миниатюр", "GALLERY_MIN_SCALE", float, 0.3, 1.0),
+            ("Мин. прозрачность", "GALLERY_MIN_ALPHA", float, 0.1, 0.8),
+            ("Миниатюры", None, None, None, None),
+            ("Лимит кэша", "THUMB_CACHE_LIMIT", int, 50, 1000),
+            ("Отступ внутри", "THUMB_PADDING", int, 2, 20),
+            ("Предзагрузка", "THUMB_PRELOAD_SPAN", int, 10, 100),
+        ]
+    },
+    {
+        "name": "Ввод",
+        "items": [
+            ("Мышь", None, None, None, None),
+            ("Двойной клик (мс)", "DOUBLE_CLICK_TIME_MS", int, 100, 600),
+            ("Таймаут бездействия (с)", "IDLE_THRESHOLD_SECONDS", float, 0.2, 2.0),
+            ("Клавиатура", None, None, None, None),
+            ("Задержка повтора (с)", "KEY_REPEAT_DELAY", float, 0.1, 1.0),
+            ("Интервал повтора (с)", "KEY_REPEAT_INTERVAL", float, 0.02, 0.2),
+            ("Навигация", None, None, None, None),
+            ("Радиус кнопок навиг.", "NAV_BTN_RADIUS", int, 20, 80),
+            ("Мин. зона края (пкс)", "NAV_EDGE_MIN_PX", int, 30, 150),
+        ]
+    },
+    {
+        "name": "Лимиты",
+        "items": [
+            ("Изображения", None, None, None, None),
+            ("Макс. размер (пкс)", "MAX_IMAGE_DIMENSION", int, 4096, 32768),
+            ("Макс. размер файла (МБ)", "MAX_FILE_SIZE_MB", int, 50, 1000),
+            ("Тяжёлый файл (МБ)", "HEAVY_FILE_SIZE_MB", int, 5, 100),
+            ("Тяжёлый мин. сторона", "HEAVY_MIN_SHORT_SIDE", int, 1000, 10000),
+            ("Окно", None, None, None, None),
+            ("Мин. ширина окна", "MIN_WINDOW_WIDTH", int, 200, 800),
+            ("Мин. высота окна", "MIN_WINDOW_HEIGHT", int, 150, 600),
+            ("Мин. высота галереи", "GALLERY_MIN_HEIGHT_PX", int, 40, 200),
+        ]
+    },
 ]
+
+# Backward compatibility: flat list for legacy code
+SETTINGS_ITEMS = []
+for tab in SETTINGS_TABS:
+    SETTINGS_ITEMS.extend(tab["items"])
 
 
 def get_settings_item_index(item_idx: int) -> int:
@@ -1500,9 +1579,103 @@ def validate_settings_value(value_str: str, val_type: type, min_val, max_val) ->
         return False, None, "Invalid number"
 
 
+def get_settings_color_scheme(state: AppState) -> dict:
+    """Get color scheme based on current background mode."""
+    bg_color = state.ui.bg_color
+    opacity = state.ui.bg_current_opacity
+
+    # Check if transparent mode (opacity < 1.0)
+    is_transparent = opacity < 1.0
+
+    # Check if light or dark background
+    is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
+
+    if is_transparent:
+        # Warm light gray for transparent mode
+        return {
+            "window_bg": (245, 242, 238, 250),  # Warm light gray
+            "window_border": (200, 195, 185, 255),
+            "title_color": (60, 55, 50, 255),
+            "text_color": (50, 45, 40, 255),
+            "text_secondary": (100, 95, 90, 255),
+            "header_bg": (230, 225, 218, 255),
+            "header_text": (80, 75, 70, 255),
+            "input_bg": (255, 252, 248, 255),
+            "input_border": (180, 175, 165, 255),
+            "input_text": (40, 35, 30, 255),
+            "input_active_border": (100, 140, 180, 255),
+            "input_active_bg": (255, 255, 252, 255),
+            "value_color": (70, 120, 160, 255),
+            "hover_bg": (235, 230, 222, 255),
+            "selection_bg": (180, 200, 220, 200),
+            "tab_active": (255, 252, 248, 255),
+            "tab_inactive": (225, 220, 212, 255),
+            "tab_text": (70, 65, 60, 255),
+            "tab_text_active": (40, 35, 30, 255),
+            "hint_color": (130, 125, 120, 255),
+            "close_btn": (150, 100, 100, 255),
+            "close_btn_hover": (200, 80, 80, 255),
+            "overlay": (100, 95, 90, 100),
+        }
+    elif is_light_bg:
+        # Light theme for white background
+        return {
+            "window_bg": (252, 252, 252, 250),
+            "window_border": (200, 200, 200, 255),
+            "title_color": (40, 40, 40, 255),
+            "text_color": (50, 50, 50, 255),
+            "text_secondary": (100, 100, 100, 255),
+            "header_bg": (235, 235, 235, 255),
+            "header_text": (80, 80, 80, 255),
+            "input_bg": (255, 255, 255, 255),
+            "input_border": (180, 180, 180, 255),
+            "input_text": (30, 30, 30, 255),
+            "input_active_border": (80, 140, 200, 255),
+            "input_active_bg": (250, 252, 255, 255),
+            "value_color": (50, 120, 180, 255),
+            "hover_bg": (240, 245, 250, 255),
+            "selection_bg": (180, 210, 240, 200),
+            "tab_active": (255, 255, 255, 255),
+            "tab_inactive": (230, 230, 230, 255),
+            "tab_text": (80, 80, 80, 255),
+            "tab_text_active": (30, 30, 30, 255),
+            "hint_color": (140, 140, 140, 255),
+            "close_btn": (160, 80, 80, 255),
+            "close_btn_hover": (220, 60, 60, 255),
+            "overlay": (0, 0, 0, 80),
+        }
+    else:
+        # Dark theme for black background
+        return {
+            "window_bg": (32, 34, 38, 250),
+            "window_border": (70, 75, 85, 255),
+            "title_color": (240, 240, 245, 255),
+            "text_color": (220, 220, 225, 255),
+            "text_secondary": (160, 160, 170, 255),
+            "header_bg": (45, 48, 55, 255),
+            "header_text": (180, 180, 190, 255),
+            "input_bg": (40, 42, 48, 255),
+            "input_border": (80, 85, 95, 255),
+            "input_text": (240, 240, 245, 255),
+            "input_active_border": (100, 160, 220, 255),
+            "input_active_bg": (45, 50, 60, 255),
+            "value_color": (120, 180, 240, 255),
+            "hover_bg": (50, 55, 65, 255),
+            "selection_bg": (70, 110, 160, 200),
+            "tab_active": (50, 55, 65, 255),
+            "tab_inactive": (38, 40, 45, 255),
+            "tab_text": (160, 160, 170, 255),
+            "tab_text_active": (240, 240, 245, 255),
+            "hint_color": (120, 120, 130, 255),
+            "close_btn": (180, 100, 100, 255),
+            "close_btn_hover": (240, 80, 80, 255),
+            "overlay": (0, 0, 0, 150),
+        }
+
+
 def handle_settings_input(state: AppState) -> bool:
-    """Handle input for settings window. Returns True if input was consumed."""
-    import imagura.config as cfg  # Import at function start for nested functions
+    """Handle input for settings window with full text editing support."""
+    import imagura.config as cfg
 
     settings = state.ui.settings
     if not settings.visible:
@@ -1510,140 +1683,157 @@ def handle_settings_input(state: AppState) -> bool:
 
     mouse = rl.GetMousePosition()
 
-    # Window dimensions (must match draw_settings_window)
-    win_w = 400
-    win_h = 500
+    # Window dimensions
+    win_w = 520
+    win_h = 480
     win_x = (state.screenW - win_w) // 2
     win_y = (state.screenH - win_h) // 2
 
+    # Tab bar dimensions
+    tab_h = 36
+    tab_y = win_y + 45
+
+    # Content area
+    content_y = tab_y + tab_h + 10
+    item_h = 32
+    val_w = 100
+    val_x = win_x + win_w - val_w - 25
+
     # Check close button click
-    close_x = win_x + win_w - 35
-    close_y = win_y + 5
+    close_size = 28
+    close_x = win_x + win_w - close_size - 12
+    close_y_btn = win_y + 12
+
     if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-        if close_x <= mouse.x <= close_x + 30 and close_y <= mouse.y <= close_y + 30:
+        # Close button
+        if (close_x <= mouse.x <= close_x + close_size and
+            close_y_btn <= mouse.y <= close_y_btn + close_size):
             settings.hide()
             return True
 
-    # Helper to save current editing value
-    def save_current_edit() -> bool:
-        """Save current edit value. Returns True if successful."""
-        if settings.editing_item < 0:
-            return True
-        editable_idx = 0
-        for item in SETTINGS_ITEMS:
-            if item[1] is not None:  # Not a header
-                if editable_idx == settings.editing_item:
-                    label, config_key, val_type, min_val, max_val = item
-                    is_valid, parsed_val, error = validate_settings_value(
-                        settings.edit_value, val_type, min_val, max_val
-                    )
-                    if is_valid:
-                        save_config_value(config_key, parsed_val, val_type)
-                        # Update runtime config value
-                        setattr(cfg, config_key, parsed_val)
-                        log(f"[SETTINGS] Updated {config_key} = {parsed_val}")
-                        return True
-                    else:
-                        log(f"[SETTINGS] Validation failed: {error}")
-                        return False
-                editable_idx += 1
-        return True
+        # Tab clicks
+        if tab_y <= mouse.y <= tab_y + tab_h:
+            tab_count = len(SETTINGS_TABS)
+            tab_w = (win_w - 40) // tab_count
+            for i in range(tab_count):
+                tx = win_x + 20 + i * tab_w
+                if tx <= mouse.x <= tx + tab_w:
+                    if i != settings.active_tab:
+                        # Save current edit before switching tabs
+                        if settings.editing_item >= 0:
+                            _save_current_edit_for_tab(state, settings.active_tab)
+                        settings.active_tab = i
+                        settings.editing_item = -1
+                        settings.edit_state.reset()
+                        settings.scroll_offset = 0
+                    return True
 
-    # Count total editable items
-    total_editable = sum(1 for item in SETTINGS_ITEMS if item[1] is not None)
+    # Get current tab items
+    current_tab = SETTINGS_TABS[settings.active_tab]
+    tab_items = current_tab["items"]
+
+    # Count editable items in current tab
+    total_editable = sum(1 for item in tab_items if item[1] is not None)
+
+    # Check if shift is held for selection
+    shift_held = rl.IsKeyDown(rl.KEY_LEFT_SHIFT) or rl.IsKeyDown(rl.KEY_RIGHT_SHIFT)
+    ctrl_held = rl.IsKeyDown(rl.KEY_LEFT_CONTROL) or rl.IsKeyDown(rl.KEY_RIGHT_CONTROL)
 
     # Handle editing mode
     if settings.editing_item >= 0:
-        # Click handling - save current and possibly switch to another field
-        if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-            item_y = win_y + 50
-            item_h = 28
-            val_x = win_x + win_w - 110
-            val_w = 100
+        edit = settings.edit_state
 
-            # Find which field was clicked (if any)
-            clicked_field = -1
+        # Click handling - position cursor or switch field
+        if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+            item_y = content_y - settings.scroll_offset
             editable_idx = 0
-            for item in SETTINGS_ITEMS:
-                if item[1] is not None:  # Editable item
-                    if (val_x - 5 <= mouse.x <= val_x + val_w + 5 and
-                        item_y <= mouse.y <= item_y + item_h):
+
+            clicked_field = -1
+            for item in tab_items:
+                if item[1] is not None:
+                    if (val_x - 5 <= mouse.x <= val_x + val_w + 10 and
+                        item_y + 2 <= mouse.y <= item_y + item_h - 2):
                         clicked_field = editable_idx
                         break
                     editable_idx += 1
                 item_y += item_h
 
             if clicked_field == settings.editing_item:
-                # Clicked on same field - do nothing
-                pass
+                # Click on same field - position cursor
+                edit.clear_selection()
             elif clicked_field >= 0:
-                # Clicked on another field - save current and switch
-                if save_current_edit():
-                    import imagura.config as cfg
-                    # Find the config key for clicked field
-                    editable_idx = 0
-                    for item in SETTINGS_ITEMS:
-                        if item[1] is not None:
-                            if editable_idx == clicked_field:
-                                current_val = getattr(cfg, item[1], 0)
-                                settings.editing_item = clicked_field
-                                settings.edit_value = str(current_val)
-                                break
-                            editable_idx += 1
+                # Save and switch to another field
+                if _save_current_edit_for_tab(state, settings.active_tab):
+                    _start_editing_field(state, settings.active_tab, clicked_field)
                 return True
             else:
-                # Clicked outside any field - save and exit editing
-                if save_current_edit():
+                # Click outside - save and exit editing
+                if _save_current_edit_for_tab(state, settings.active_tab):
                     settings.editing_item = -1
-                    settings.edit_value = ""
+                    edit.reset()
                 return True
 
-        # Tab - save and move to next field
-        if rl.IsKeyPressed(rl.KEY_TAB):
-            if save_current_edit():
-                import imagura.config as cfg
-                if rl.IsKeyDown(rl.KEY_LEFT_SHIFT) or rl.IsKeyDown(rl.KEY_RIGHT_SHIFT):
-                    # Shift+Tab - previous field
-                    new_idx = (settings.editing_item - 1) % total_editable
-                else:
-                    # Tab - next field
-                    new_idx = (settings.editing_item + 1) % total_editable
-
-                # Find config key for new field
-                editable_idx = 0
-                for item in SETTINGS_ITEMS:
-                    if item[1] is not None:
-                        if editable_idx == new_idx:
-                            current_val = getattr(cfg, item[1], 0)
-                            settings.editing_item = new_idx
-                            settings.edit_value = str(current_val)
-                            break
-                        editable_idx += 1
+        # Keyboard navigation
+        if rl.IsKeyPressed(rl.KEY_LEFT):
+            edit.move_cursor_left(shift_held)
             return True
 
-        # Get key input
+        if rl.IsKeyPressed(rl.KEY_RIGHT):
+            edit.move_cursor_right(shift_held)
+            return True
+
+        if rl.IsKeyPressed(rl.KEY_HOME):
+            edit.move_cursor_home(shift_held)
+            return True
+
+        if rl.IsKeyPressed(rl.KEY_END):
+            edit.move_cursor_end(shift_held)
+            return True
+
+        # Ctrl+A - select all
+        if ctrl_held and rl.IsKeyPressed(rl.KEY_A):
+            edit.select_all()
+            return True
+
+        # Tab navigation between fields
+        if rl.IsKeyPressed(rl.KEY_TAB):
+            if _save_current_edit_for_tab(state, settings.active_tab):
+                if shift_held:
+                    new_idx = (settings.editing_item - 1) % total_editable
+                else:
+                    new_idx = (settings.editing_item + 1) % total_editable
+                _start_editing_field(state, settings.active_tab, new_idx)
+            return True
+
+        # Text input
         key = rl.GetCharPressed()
         while key > 0:
             # Allow digits, decimal point, minus
-            if (48 <= key <= 57) or key == 46 or key == 45:  # 0-9, '.', '-'
-                settings.edit_value += chr(key)
+            if (48 <= key <= 57) or key == 46 or key == 45:
+                edit.insert_text(chr(key))
             key = rl.GetCharPressed()
 
         # Backspace
-        if rl.IsKeyPressed(rl.KEY_BACKSPACE) and len(settings.edit_value) > 0:
-            settings.edit_value = settings.edit_value[:-1]
-
-        # Enter - save value and exit editing
-        if rl.IsKeyPressed(rl.KEY_ENTER):
-            if save_current_edit():
-                settings.editing_item = -1
-                settings.edit_value = ""
+        if rl.IsKeyPressed(rl.KEY_BACKSPACE):
+            edit.delete_char_before()
             return True
 
-        # Escape - cancel editing (don't save)
+        # Delete
+        if rl.IsKeyPressed(rl.KEY_DELETE):
+            edit.delete_char_after()
+            return True
+
+        # Enter - save and exit
+        if rl.IsKeyPressed(rl.KEY_ENTER):
+            if _save_current_edit_for_tab(state, settings.active_tab):
+                settings.editing_item = -1
+                edit.reset()
+            return True
+
+        # Escape - cancel editing
         if rl.IsKeyPressed(rl.KEY_ESCAPE):
             settings.editing_item = -1
-            settings.edit_value = ""
+            edit.reset()
             return True
 
         return True  # Consume all input while editing
@@ -1653,25 +1843,26 @@ def handle_settings_input(state: AppState) -> bool:
         settings.hide()
         return True
 
-    # Handle item click to start editing
+    # Handle mouse wheel scrolling
+    wheel = rl.GetMouseWheelMove()
+    if wheel != 0:
+        max_scroll = max(0, len(tab_items) * item_h - (win_h - (content_y - win_y) - 50))
+        settings.scroll_offset = max(0, min(max_scroll, settings.scroll_offset - int(wheel * 40)))
+        return True
+
+    # Handle click to start editing
     if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-        item_y = win_y + 50
-        item_h = 28
-        val_x = win_x + win_w - 110
-        val_w = 100
-
+        item_y = content_y - settings.scroll_offset
         editable_idx = 0
-        for item in SETTINGS_ITEMS:
-            label, config_key, val_type, min_val, max_val = item if len(item) == 5 else (item[0], item[1], None, None, None)
 
-            if config_key is not None:  # Editable item
-                # Check if click is in value area
-                if (val_x <= mouse.x <= val_x + val_w and
-                    item_y <= mouse.y <= item_y + item_h):
-                    import imagura.config as cfg
-                    current_val = getattr(cfg, config_key, 0)
-                    settings.editing_item = editable_idx
-                    settings.edit_value = str(current_val)
+        for item in tab_items:
+            label, config_key, val_type, min_val, max_val = item
+
+            if config_key is not None:
+                if (val_x - 5 <= mouse.x <= val_x + val_w + 10 and
+                    item_y + 2 <= mouse.y <= item_y + item_h - 2 and
+                    content_y <= mouse.y <= win_y + win_h - 50):
+                    _start_editing_field(state, settings.active_tab, editable_idx)
                     return True
                 editable_idx += 1
 
@@ -1680,145 +1871,278 @@ def handle_settings_input(state: AppState) -> bool:
     return False
 
 
+def _save_current_edit_for_tab(state: AppState, tab_idx: int) -> bool:
+    """Save current edit value for a specific tab. Returns True if successful."""
+    import imagura.config as cfg
+
+    settings = state.ui.settings
+    if settings.editing_item < 0:
+        return True
+
+    tab_items = SETTINGS_TABS[tab_idx]["items"]
+    editable_idx = 0
+
+    for item in tab_items:
+        if item[1] is not None:
+            if editable_idx == settings.editing_item:
+                label, config_key, val_type, min_val, max_val = item
+                is_valid, parsed_val, error = validate_settings_value(
+                    settings.edit_state.text, val_type, min_val, max_val
+                )
+                if is_valid:
+                    save_config_value(config_key, parsed_val, val_type)
+                    setattr(cfg, config_key, parsed_val)
+                    log(f"[SETTINGS] Updated {config_key} = {parsed_val}")
+                    return True
+                else:
+                    log(f"[SETTINGS] Validation failed: {error}")
+                    return False
+            editable_idx += 1
+    return True
+
+
+def _start_editing_field(state: AppState, tab_idx: int, field_idx: int) -> None:
+    """Start editing a specific field."""
+    import imagura.config as cfg
+
+    settings = state.ui.settings
+    tab_items = SETTINGS_TABS[tab_idx]["items"]
+    editable_idx = 0
+
+    for item in tab_items:
+        if item[1] is not None:
+            if editable_idx == field_idx:
+                config_key = item[1]
+                current_val = getattr(cfg, config_key, 0)
+                settings.editing_item = field_idx
+                settings.edit_state.set_text(str(current_val))
+                return
+            editable_idx += 1
+
+
 def draw_settings_window(state: AppState):
-    """Draw settings window overlay."""
-    import imagura.config as cfg  # Import at start to avoid scope issues
+    """Draw settings window overlay with tabs and adaptive colors."""
+    import imagura.config as cfg
 
     settings = state.ui.settings
     if not settings.visible:
         return
 
+    colors = get_settings_color_scheme(state)
+
     # Window dimensions
-    win_w = 400
-    win_h = 500
+    win_w = 520
+    win_h = 480
     win_x = (state.screenW - win_w) // 2
     win_y = (state.screenH - win_h) // 2
 
-    # Darken background
-    rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(0, 0, 0, 150))
+    font_size = max(16, min(22, cfg.FONT_DISPLAY_SIZE - 4))
+    small_font = max(14, font_size - 2)
 
-    # Window background
-    rl.DrawRectangle(win_x, win_y, win_w, win_h, RL_Color(30, 30, 30, 250))
-    rl.DrawRectangleLines(win_x, win_y, win_w, win_h, RL_Color(100, 100, 100, 255))
+    # Darken background overlay
+    rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(*colors["overlay"]))
 
-    # Font size from config
-    font_size = cfg.FONT_DISPLAY_SIZE
+    # Window shadow
+    shadow_offset = 8
+    rl.DrawRectangle(win_x + shadow_offset, win_y + shadow_offset, win_w, win_h, RL_Color(0, 0, 0, 40))
+
+    # Window background with rounded corners effect (using layered rectangles)
+    rl.DrawRectangle(win_x, win_y, win_w, win_h, RL_Color(*colors["window_bg"]))
+
+    # Border
+    rl.DrawRectangleLines(win_x, win_y, win_w, win_h, RL_Color(*colors["window_border"]))
 
     # Title
     title = "Настройки"
-    if state.unicode_font:
-        try:
-            rl.DrawTextEx(state.unicode_font, title.encode('utf-8'),
-                          RL_V2(win_x + 20, win_y + 15), font_size, 1.0, RL_Color(255, 255, 255, 255))
-        except Exception:
-            RL_DrawText("Settings", win_x + 20, win_y + 15, font_size, RL_Color(255, 255, 255, 255))
-    else:
-        RL_DrawText("Settings", win_x + 20, win_y + 15, font_size, RL_Color(255, 255, 255, 255))
+    _draw_settings_text(state, title, win_x + 20, win_y + 14, font_size + 2, colors["title_color"])
 
-    # Close button (X)
-    close_x = win_x + win_w - 30
-    close_y = win_y + 10
-    if state.unicode_font:
-        try:
-            rl.DrawTextEx(state.unicode_font, b"X",
-                          RL_V2(close_x, close_y), font_size, 1.0, RL_Color(200, 200, 200, 255))
-        except Exception:
-            RL_DrawText("X", close_x, close_y, font_size, RL_Color(200, 200, 200, 255))
-    else:
-        RL_DrawText("X", close_x, close_y, font_size, RL_Color(200, 200, 200, 255))
+    # Close button
+    close_size = 28
+    close_x = win_x + win_w - close_size - 12
+    close_y = win_y + 12
+    mouse = rl.GetMousePosition()
+    close_hover = (close_x <= mouse.x <= close_x + close_size and
+                   close_y <= mouse.y <= close_y + close_size)
 
-    # Settings items
-    item_y = win_y + 50
-    item_h = 28
+    close_color = colors["close_btn_hover"] if close_hover else colors["close_btn"]
+    _draw_settings_text(state, "×", close_x + 6, close_y + 2, font_size + 6, close_color)
+
+    # Tab bar
+    tab_y = win_y + 45
+    tab_h = 36
+    tab_count = len(SETTINGS_TABS)
+    tab_w = (win_w - 40) // tab_count
+
+    for i, tab in enumerate(SETTINGS_TABS):
+        tx = win_x + 20 + i * tab_w
+        is_active = (i == settings.active_tab)
+
+        # Tab background
+        if is_active:
+            tab_bg = colors["tab_active"]
+            # Active tab indicator line
+            rl.DrawRectangle(tx, tab_y + tab_h - 3, tab_w - 4, 3, RL_Color(*colors["input_active_border"]))
+        else:
+            tab_bg = colors["tab_inactive"]
+
+        rl.DrawRectangle(tx, tab_y, tab_w - 4, tab_h - 3, RL_Color(*tab_bg))
+
+        # Tab text
+        tab_text_color = colors["tab_text_active"] if is_active else colors["tab_text"]
+        text_y = tab_y + (tab_h - small_font) // 2
+        _draw_settings_text(state, tab["name"], tx + 8, text_y, small_font, tab_text_color)
+
+    # Content area
+    content_y = tab_y + tab_h + 10
+    content_h = win_h - (content_y - win_y) - 45
+    item_h = 32
     padding_x = 20
-    val_x = win_x + win_w - 110
-    val_w = 90
+    val_w = 100
+    val_x = win_x + win_w - val_w - 25
 
+    # Clip content area
+    rl.BeginScissorMode(win_x, content_y, win_w, content_h)
+
+    current_tab = SETTINGS_TABS[settings.active_tab]
+    tab_items = current_tab["items"]
+    item_y = content_y - settings.scroll_offset
     editable_idx = 0
 
-    for item in SETTINGS_ITEMS:
-        label, config_key, val_type, min_val, max_val = item if len(item) == 5 else (item[0], item[1], None, None, None)
+    for item in tab_items:
+        label, config_key, val_type, min_val, max_val = item
+
+        # Skip items outside visible area
+        if item_y + item_h < content_y or item_y > content_y + content_h:
+            if config_key is not None:
+                editable_idx += 1
+            item_y += item_h
+            continue
 
         if config_key is None:
             # Section header
-            rl.DrawRectangle(win_x, item_y, win_w, item_h, RL_Color(50, 50, 50, 255))
-            if state.unicode_font:
-                try:
-                    rl.DrawTextEx(state.unicode_font, label.encode('utf-8'),
-                                  RL_V2(win_x + padding_x, item_y + 6), font_size, 1.0, RL_Color(180, 180, 180, 255))
-                except Exception:
-                    RL_DrawText(label, win_x + padding_x, item_y + 6, font_size, RL_Color(180, 180, 180, 255))
-            else:
-                RL_DrawText(label, win_x + padding_x, item_y + 6, font_size, RL_Color(180, 180, 180, 255))
+            rl.DrawRectangle(win_x + 10, item_y, win_w - 20, item_h, RL_Color(*colors["header_bg"]))
+            _draw_settings_text(state, label, win_x + padding_x, item_y + (item_h - small_font) // 2,
+                              small_font, colors["header_text"])
         else:
             # Config item
             current_val = getattr(cfg, config_key, "?")
-
-            # Draw label
-            label_text = f"  {label}:"
-            if state.unicode_font:
-                try:
-                    rl.DrawTextEx(state.unicode_font, label_text.encode('utf-8'),
-                                  RL_V2(win_x + padding_x, item_y + 6), font_size, 1.0, RL_Color(200, 200, 200, 255))
-                except Exception:
-                    RL_DrawText(label_text, win_x + padding_x, item_y + 6, font_size, RL_Color(200, 200, 200, 255))
-            else:
-                RL_DrawText(label_text, win_x + padding_x, item_y + 6, font_size, RL_Color(200, 200, 200, 255))
-
-            # Check if this item is being edited
             is_editing = (settings.editing_item == editable_idx)
 
-            # Draw value background (edit field)
+            # Draw label
+            _draw_settings_text(state, label, win_x + padding_x + 10, item_y + (item_h - small_font) // 2,
+                              small_font, colors["text_color"])
+
+            # Input field area
+            field_x = val_x - 5
+            field_w = val_w + 10
+            field_y = item_y + 4
+            field_h = item_h - 8
+
             if is_editing:
-                rl.DrawRectangle(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(60, 60, 80, 255))
-                rl.DrawRectangleLines(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(100, 150, 255, 255))
-                # Draw edit value with cursor
-                display_val = settings.edit_value
-                cursor = "|" if (int(now() * 2) % 2 == 0) else ""
-                edit_text = display_val + cursor
-                if state.unicode_font:
-                    try:
-                        rl.DrawTextEx(state.unicode_font, edit_text.encode('utf-8'),
-                                      RL_V2(val_x, item_y + 6), font_size, 1.0, RL_Color(255, 255, 255, 255))
-                    except Exception:
-                        RL_DrawText(edit_text, val_x, item_y + 6, font_size, RL_Color(255, 255, 255, 255))
-                else:
-                    RL_DrawText(edit_text, val_x, item_y + 6, font_size, RL_Color(255, 255, 255, 255))
+                # Active editing field
+                rl.DrawRectangle(field_x, field_y, field_w, field_h, RL_Color(*colors["input_active_bg"]))
+                rl.DrawRectangleLines(field_x, field_y, field_w, field_h, RL_Color(*colors["input_active_border"]))
+
+                edit = settings.edit_state
+                text = edit.text
+
+                # Draw selection background if any
+                if edit.has_selection():
+                    sel_start, sel_end = edit.get_selection_range()
+                    text_before_sel = text[:sel_start]
+                    text_sel = text[sel_start:sel_end]
+
+                    # Measure text widths
+                    start_x = val_x
+                    if state.unicode_font and text_before_sel:
+                        start_offset = rl.MeasureTextEx(state.unicode_font, text_before_sel.encode('utf-8'),
+                                                        small_font, 1.0).x
+                        start_x += int(start_offset)
+
+                    if state.unicode_font and text_sel:
+                        sel_width = rl.MeasureTextEx(state.unicode_font, text_sel.encode('utf-8'),
+                                                     small_font, 1.0).x
+                    else:
+                        sel_width = len(text_sel) * (small_font // 2)
+
+                    rl.DrawRectangle(start_x, field_y + 2, int(sel_width), field_h - 4,
+                                    RL_Color(*colors["selection_bg"]))
+
+                # Draw text
+                _draw_settings_text(state, text, val_x, item_y + (item_h - small_font) // 2,
+                                  small_font, colors["input_text"])
+
+                # Draw cursor
+                if int(now() * 2) % 2 == 0:
+                    text_before_cursor = text[:edit.cursor_pos]
+                    cursor_x = val_x
+                    if state.unicode_font and text_before_cursor:
+                        cursor_offset = rl.MeasureTextEx(state.unicode_font, text_before_cursor.encode('utf-8'),
+                                                         small_font, 1.0).x
+                        cursor_x += int(cursor_offset)
+                    rl.DrawRectangle(cursor_x, field_y + 4, 2, field_h - 8,
+                                    RL_Color(*colors["input_text"]))
             else:
-                # Hover highlight
-                mouse = rl.GetMousePosition()
-                if (val_x - 5 <= mouse.x <= val_x + val_w + 5 and
-                    item_y <= mouse.y <= item_y + item_h):
-                    rl.DrawRectangle(val_x - 5, item_y + 2, val_w + 10, item_h - 4, RL_Color(50, 50, 60, 255))
+                # Normal field with hover effect
+                is_hover = (field_x <= mouse.x <= field_x + field_w and
+                           field_y <= mouse.y <= field_y + field_h)
+                if is_hover:
+                    rl.DrawRectangle(field_x, field_y, field_w, field_h, RL_Color(*colors["hover_bg"]))
+                else:
+                    rl.DrawRectangle(field_x, field_y, field_w, field_h, RL_Color(*colors["input_bg"]))
+                rl.DrawRectangleLines(field_x, field_y, field_w, field_h, RL_Color(*colors["input_border"]))
 
                 val_str = str(current_val)
-                if state.unicode_font:
-                    try:
-                        rl.DrawTextEx(state.unicode_font, val_str.encode('utf-8'),
-                                      RL_V2(val_x, item_y + 6), font_size, 1.0, RL_Color(100, 200, 255, 255))
-                    except Exception:
-                        RL_DrawText(val_str, val_x, item_y + 6, font_size, RL_Color(100, 200, 255, 255))
-                else:
-                    RL_DrawText(val_str, val_x, item_y + 6, font_size, RL_Color(100, 200, 255, 255))
+                _draw_settings_text(state, val_str, val_x, item_y + (item_h - small_font) // 2,
+                                  small_font, colors["value_color"])
 
             editable_idx += 1
 
         item_y += item_h
 
-    # Footer hint
+    rl.EndScissorMode()
+
+    # Scroll indicators
+    max_scroll = max(0, len(tab_items) * item_h - content_h)
+    if max_scroll > 0:
+        scroll_bar_h = max(20, content_h * content_h // (len(tab_items) * item_h))
+        scroll_bar_y = content_y + (settings.scroll_offset / max_scroll) * (content_h - scroll_bar_h)
+        rl.DrawRectangle(win_x + win_w - 8, int(scroll_bar_y), 4, int(scroll_bar_h),
+                        RL_Color(*colors["input_border"]))
+
+    # Footer hints
+    hint_y = win_y + win_h - 35
     if settings.editing_item >= 0:
-        hint = "Enter: Сохранить | Esc: Отмена"
+        hints = [("Enter", "сохранить"), ("Esc", "отмена"), ("Tab", "след. поле"),
+                ("Home/End", "начало/конец"), ("Shift+←→", "выделение")]
     else:
-        hint = "Клик по значению для редактирования | Esc: Закрыть"
-    hint_size = max(12, font_size - 4)  # Slightly smaller than main font
+        hints = [("Клик", "редактировать"), ("Esc", "закрыть"), ("Колесо", "прокрутка")]
+
+    hint_x = win_x + 15
+    for key, desc in hints:
+        hint_text = f"{key}: {desc}"
+        _draw_settings_text(state, hint_text, hint_x, hint_y, small_font - 2, colors["hint_color"])
+        if state.unicode_font:
+            text_width = rl.MeasureTextEx(state.unicode_font, hint_text.encode('utf-8'),
+                                          small_font - 2, 1.0).x
+        else:
+            text_width = len(hint_text) * ((small_font - 2) // 2)
+        hint_x += int(text_width) + 20
+        if hint_x > win_x + win_w - 100:
+            break
+
+
+def _draw_settings_text(state: AppState, text: str, x: int, y: int, size: int, color: tuple):
+    """Helper to draw text with unicode support."""
+    color_rl = RL_Color(*color)
     if state.unicode_font:
         try:
-            rl.DrawTextEx(state.unicode_font, hint.encode('utf-8'),
-                          RL_V2(win_x + 20, win_y + win_h - 30), hint_size, 1.0, RL_Color(120, 120, 120, 255))
+            rl.DrawTextEx(state.unicode_font, text.encode('utf-8'),
+                         RL_V2(x, y), size, 1.0, color_rl)
+            return
         except Exception:
-            RL_DrawText(hint, win_x + 20, win_y + win_h - 30, hint_size, RL_Color(120, 120, 120, 255))
-    else:
-        RL_DrawText(hint, win_x + 20, win_y + win_h - 30, hint_size, RL_Color(120, 120, 120, 255))
+            pass
+    RL_DrawText(text, x, y, size, color_rl)
 
 
 def delete_to_recycle_bin(file_path: str) -> bool:
