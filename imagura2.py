@@ -74,9 +74,13 @@ from imagura.types import (
     ViewParams, TextureInfo, ImageCache, BitmapThumb,
 )
 from imagura.view_math import (
-    compute_fit_scale, center_view_for, compute_fit_view,
-    clamp_pan as clamp_pan_pure, recompute_view_anchor_zoom as anchor_zoom_pure,
-    view_for_1to1_centered as view_1to1_pure, sanitize_view as sanitize_view_pure,
+    compute_fit_scale as compute_fit_scale_pure,
+    center_view_for as center_view_for_pure,
+    compute_fit_view as compute_fit_view_pure,
+    clamp_pan as clamp_pan_pure,
+    recompute_view_anchor_zoom as anchor_zoom_pure,
+    view_for_1to1_centered as view_1to1_pure,
+    sanitize_view as sanitize_view_pure,
 )
 from imagura.animation import (
     AnimationController, AnimationType,
@@ -500,22 +504,12 @@ def process_deferred_unloads(state: AppState):
             log(f"[UNLOAD][ERR] {e!r}")
 
 
-def compute_fit_scale(iw, ih, sw, sh, frac):
-    if iw == 0 or ih == 0:
-        return 1.0
-    return min(sw * frac / iw, sh * frac / ih)
-
-
-def center_view_for(scale, iw, ih, sw, sh):
-    return ViewParams(scale=scale, offx=(sw - iw * scale) / 2.0, offy=(sh - ih * scale) / 2.0)
-
-
 def compute_fit_view(state, frac):
+    """Compute fit view for current image using state dimensions."""
     ti = state.cache.curr
     if not ti:
         return ViewParams()
-    s = compute_fit_scale(ti.w, ti.h, state.screenW, state.screenH, frac)
-    return center_view_for(s, ti.w, ti.h, state.screenW, state.screenH)
+    return compute_fit_view_pure(ti.w, ti.h, state.screenW, state.screenH, frac)
 
 
 def clamp_pan(view: ViewParams, img: TextureInfo, screenW: int, screenH: int) -> ViewParams:
