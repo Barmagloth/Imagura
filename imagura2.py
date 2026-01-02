@@ -37,7 +37,13 @@ from imagura.config import (
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA, GALLERY_SETTLE_DEBOUNCE_S,
     THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
     DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
-    SETTINGS_COLORS_TRANSPARENT, SETTINGS_COLORS_LIGHT, SETTINGS_COLORS_DARK,
+    SETTINGS_MODAL_COLORS_TRANSPARENT, SETTINGS_MODAL_COLORS_LIGHT, SETTINGS_MODAL_COLORS_DARK,
+    SETTINGS_MODAL_WIDTH, SETTINGS_MODAL_HEIGHT, SETTINGS_MODAL_SHADOW_OFFSET,
+    SETTINGS_MODAL_TITLE_Y, SETTINGS_MODAL_CLOSE_SIZE, SETTINGS_MODAL_CLOSE_MARGIN,
+    SETTINGS_TAB_HEIGHT, SETTINGS_TAB_PADDING, SETTINGS_TAB_GAP, SETTINGS_TAB_START_X, SETTINGS_TAB_TOP_Y,
+    SETTINGS_CONTENT_PADDING_X, SETTINGS_CONTENT_ITEM_HEIGHT, SETTINGS_CONTENT_SUB_INDENT,
+    SETTINGS_CONTENT_VALUE_WIDTH, SETTINGS_CONTENT_VALUE_MARGIN, SETTINGS_CONTENT_BORDER_MARGIN,
+    SETTINGS_CONTENT_FOOTER_HEIGHT,
     KEY_REPEAT_DELAY, KEY_REPEAT_INTERVAL,
     TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
     TOOLBAR_BG_ALPHA, TOOLBAR_SLIDE_MS,
@@ -1616,11 +1622,11 @@ def get_settings_color_scheme(state: AppState) -> dict:
     is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
 
     if is_transparent:
-        return SETTINGS_COLORS_TRANSPARENT
+        return SETTINGS_MODAL_COLORS_TRANSPARENT
     elif is_light_bg:
-        return SETTINGS_COLORS_LIGHT
+        return SETTINGS_MODAL_COLORS_LIGHT
     else:
-        return SETTINGS_COLORS_DARK
+        return SETTINGS_MODAL_COLORS_DARK
 
 
 def handle_settings_input(state: AppState) -> bool:
@@ -1633,9 +1639,9 @@ def handle_settings_input(state: AppState) -> bool:
 
     mouse = rl.GetMousePosition()
 
-    # Window dimensions
-    win_w = 600
-    win_h = 480
+    # Window dimensions (from config)
+    win_w = SETTINGS_MODAL_WIDTH
+    win_h = SETTINGS_MODAL_HEIGHT
     win_x = (state.screenW - win_w) // 2
     win_y = (state.screenH - win_h) // 2
 
@@ -1643,30 +1649,28 @@ def handle_settings_input(state: AppState) -> bool:
     font_size = max(16, min(22, cfg.FONT_DISPLAY_SIZE - 4))
     small_font = max(14, font_size - 2)
 
-    # Tab bar dimensions
-    tab_h = 32
-    tab_y = win_y + 45
+    # Tab bar dimensions (from config)
+    tab_y = win_y + SETTINGS_TAB_TOP_Y
+    content_y = tab_y + SETTINGS_TAB_HEIGHT
 
-    # Content area
-    content_y = tab_y + tab_h
-    item_h = 32
-    val_w = 100
-    val_x = win_x + win_w - val_w - 30
+    # Content layout (from config)
+    item_h = SETTINGS_CONTENT_ITEM_HEIGHT
+    val_w = SETTINGS_CONTENT_VALUE_WIDTH
+    val_x = win_x + win_w - val_w - SETTINGS_CONTENT_VALUE_MARGIN
 
     # Check close button click
-    close_size = 28
-    close_x = win_x + win_w - close_size - 12
-    close_y_btn = win_y + 12
+    close_x = win_x + win_w - SETTINGS_MODAL_CLOSE_SIZE - SETTINGS_MODAL_CLOSE_MARGIN
+    close_y_btn = win_y + SETTINGS_MODAL_TITLE_Y
 
     if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
         # Close button
-        if (close_x <= mouse.x <= close_x + close_size and
-            close_y_btn <= mouse.y <= close_y_btn + close_size):
+        if (close_x <= mouse.x <= close_x + SETTINGS_MODAL_CLOSE_SIZE and
+            close_y_btn <= mouse.y <= close_y_btn + SETTINGS_MODAL_CLOSE_SIZE):
             settings.hide()
             return True
 
         # Tab clicks - use dynamic tab positions
-        if tab_y <= mouse.y <= tab_y + tab_h:
+        if tab_y <= mouse.y <= tab_y + SETTINGS_TAB_HEIGHT:
             tab_positions = _get_tab_positions(state, win_x, small_font)
             for i, (tx, tw) in enumerate(tab_positions):
                 if tx <= mouse.x <= tx + tw:
@@ -1796,9 +1800,10 @@ def handle_settings_input(state: AppState) -> bool:
         return True
 
     # Handle mouse wheel scrolling
+    content_h = win_h - (content_y - win_y) - SETTINGS_CONTENT_FOOTER_HEIGHT
     wheel = rl.GetMouseWheelMove()
     if wheel != 0:
-        max_scroll = max(0, len(tab_items) * item_h - (win_h - (content_y - win_y) - 50))
+        max_scroll = max(0, len(tab_items) * item_h - content_h)
         settings.scroll_offset = max(0, min(max_scroll, settings.scroll_offset - int(wheel * 40)))
         return True
 
@@ -1813,7 +1818,7 @@ def handle_settings_input(state: AppState) -> bool:
             if config_key is not None:
                 if (val_x - 5 <= mouse.x <= val_x + val_w + 10 and
                     item_y + 2 <= mouse.y <= item_y + item_h - 2 and
-                    content_y <= mouse.y <= win_y + win_h - 50):
+                    content_y <= mouse.y <= content_y + content_h):
                     _start_editing_field(state, settings.active_tab, editable_idx)
                     return True
                 editable_idx += 1
@@ -1882,9 +1887,9 @@ def draw_settings_window(state: AppState):
 
     colors = get_settings_color_scheme(state)
 
-    # Window dimensions
-    win_w = 600
-    win_h = 480
+    # Window dimensions (from config)
+    win_w = SETTINGS_MODAL_WIDTH
+    win_h = SETTINGS_MODAL_HEIGHT
     win_x = (state.screenW - win_w) // 2
     win_y = (state.screenH - win_h) // 2
 
@@ -1896,8 +1901,8 @@ def draw_settings_window(state: AppState):
     rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(*colors["overlay"]))
 
     # Window shadow
-    shadow_offset = 8
-    rl.DrawRectangle(win_x + shadow_offset, win_y + shadow_offset, win_w, win_h, RL_Color(0, 0, 0, 40))
+    rl.DrawRectangle(win_x + SETTINGS_MODAL_SHADOW_OFFSET, win_y + SETTINGS_MODAL_SHADOW_OFFSET,
+                     win_w, win_h, RL_Color(0, 0, 0, 40))
 
     # Window background
     rl.DrawRectangle(win_x, win_y, win_w, win_h, RL_Color(*colors["window_bg"]))
@@ -1907,24 +1912,21 @@ def draw_settings_window(state: AppState):
 
     # Title
     title = "Настройки"
-    _draw_settings_text(state, title, win_x + 20, win_y + 14, font_size + 2, colors["title_color"])
+    _draw_settings_text(state, title, win_x + 20, win_y + SETTINGS_MODAL_TITLE_Y, font_size + 2, colors["title_color"])
 
     # Close button
-    close_size = 28
-    close_x = win_x + win_w - close_size - 12
-    close_y = win_y + 12
+    close_x = win_x + win_w - SETTINGS_MODAL_CLOSE_SIZE - SETTINGS_MODAL_CLOSE_MARGIN
+    close_y = win_y + SETTINGS_MODAL_TITLE_Y
     mouse = rl.GetMousePosition()
-    close_hover = (close_x <= mouse.x <= close_x + close_size and
-                   close_y <= mouse.y <= close_y + close_size)
+    close_hover = (close_x <= mouse.x <= close_x + SETTINGS_MODAL_CLOSE_SIZE and
+                   close_y <= mouse.y <= close_y + SETTINGS_MODAL_CLOSE_SIZE)
 
     close_color = colors["close_btn_hover"] if close_hover else colors["close_btn"]
     _draw_settings_text(state, "X", close_x + 8, close_y + 2, font_size + 4, close_color)
 
     # Tab bar - calculate widths based on text content
-    tab_y = win_y + 45
-    tab_h = 32
-    tab_padding = 10  # Horizontal padding inside each tab
-    tab_gap = 2  # Gap between tabs
+    tab_y = win_y + SETTINGS_TAB_TOP_Y
+    tab_h = SETTINGS_TAB_HEIGHT
 
     # Measure tab widths
     tab_widths = []
@@ -1933,16 +1935,16 @@ def draw_settings_window(state: AppState):
             tw = rl.MeasureTextEx(state.unicode_font, tab["name"].encode('utf-8'), tab_font, 1.0).x
         else:
             tw = len(tab["name"]) * (tab_font // 2)
-        tab_widths.append(int(tw) + tab_padding * 2)
+        tab_widths.append(int(tw) + SETTINGS_TAB_PADDING * 2)
 
     # Content area border color
     border_color = RL_Color(120, 120, 125, 255)  # Dark gray border
     content_y = tab_y + tab_h
-    content_h = win_h - (content_y - win_y) - 45
+    content_h = win_h - (content_y - win_y) - SETTINGS_CONTENT_FOOTER_HEIGHT
 
     # Draw content area border (bottom and sides, top will be drawn with tabs)
-    content_border_x = win_x + 15
-    content_border_w = win_w - 30
+    content_border_x = win_x + SETTINGS_CONTENT_BORDER_MARGIN
+    content_border_w = win_w - SETTINGS_CONTENT_BORDER_MARGIN * 2
     # Left border
     rl.DrawLine(content_border_x, content_y, content_border_x, content_y + content_h, border_color)
     # Right border
@@ -1953,7 +1955,7 @@ def draw_settings_window(state: AppState):
                 content_border_x + content_border_w, content_y + content_h, border_color)
 
     # Draw tabs with borders
-    tab_x = win_x + 15
+    tab_x = win_x + SETTINGS_TAB_START_X
     for i, tab in enumerate(SETTINGS_TABS):
         tw = tab_widths[i]
         is_active = (i == settings.active_tab)
@@ -1971,24 +1973,23 @@ def draw_settings_window(state: AppState):
             # No bottom border - connects with content
         else:
             # Inactive tab - no background, just text
-            # Draw top border line at content level (connects the inactive tab area)
             pass
 
         # Tab text
         tab_text_color = colors["tab_text_active"] if is_active else colors["tab_text"]
         text_y = tab_y + (tab_h - tab_font) // 2
-        text_x = tab_x + tab_padding
+        text_x = tab_x + SETTINGS_TAB_PADDING
         _draw_settings_text(state, tab["name"], text_x, text_y, tab_font, tab_text_color)
 
-        tab_x += tw + tab_gap
+        tab_x += tw + SETTINGS_TAB_GAP
 
     # Draw top border for content area (between tabs)
     # From left edge to first tab
-    first_tab_x = win_x + 15
+    first_tab_x = win_x + SETTINGS_TAB_START_X
     rl.DrawLine(content_border_x, content_y, first_tab_x, content_y, border_color)
 
     # Between tabs and after last tab
-    tab_x = win_x + 15
+    tab_x = win_x + SETTINGS_TAB_START_X
     for i, tw in enumerate(tab_widths):
         if i == settings.active_tab:
             # Skip drawing under active tab
@@ -1996,20 +1997,21 @@ def draw_settings_window(state: AppState):
         else:
             # Draw line under inactive tabs
             rl.DrawLine(tab_x, content_y, tab_x + tw, content_y, border_color)
-        tab_x += tw + tab_gap
+        tab_x += tw + SETTINGS_TAB_GAP
 
     # From last tab to right edge
-    rl.DrawLine(tab_x - tab_gap, content_y, content_border_x + content_border_w, content_y, border_color)
+    rl.DrawLine(tab_x - SETTINGS_TAB_GAP, content_y, content_border_x + content_border_w, content_y, border_color)
 
-    # Content area
-    item_h = 32
-    padding_x = 25
-    sub_item_padding = 20  # Extra indent for sub-items
-    val_w = 100
-    val_x = win_x + win_w - val_w - 30
+    # Content area layout (from config)
+    item_h = SETTINGS_CONTENT_ITEM_HEIGHT
+    padding_x = SETTINGS_CONTENT_PADDING_X
+    sub_item_padding = SETTINGS_CONTENT_SUB_INDENT
+    val_w = SETTINGS_CONTENT_VALUE_WIDTH
+    val_x = win_x + win_w - val_w - SETTINGS_CONTENT_VALUE_MARGIN
 
     # Clip content area
-    rl.BeginScissorMode(win_x + 16, content_y + 1, win_w - 32, content_h - 2)
+    rl.BeginScissorMode(win_x + SETTINGS_CONTENT_BORDER_MARGIN + 1, content_y + 1,
+                        win_w - SETTINGS_CONTENT_BORDER_MARGIN * 2 - 2, content_h - 2)
 
     current_tab = SETTINGS_TABS[settings.active_tab]
     tab_items = current_tab["items"]
@@ -2151,7 +2153,7 @@ def draw_settings_window(state: AppState):
     else:
         hints = [("Клик", "редактировать"), ("Esc", "закрыть"), ("Колесо", "прокрутка")]
 
-    hint_x = win_x + 15
+    hint_x = win_x + SETTINGS_TAB_START_X
     for key, desc in hints:
         hint_text = f"{key}: {desc}"
         _draw_settings_text(state, hint_text, hint_x, hint_y, small_font - 2, colors["hint_color"])
@@ -2166,20 +2168,18 @@ def draw_settings_window(state: AppState):
 
 
 def _get_tab_positions(state: AppState, win_x: int, small_font: int) -> list:
-    """Calculate tab positions and widths based on text content."""
-    tab_padding = 16
-    tab_gap = 2
+    """Calculate tab positions and widths based on text content. Uses config constants."""
     tab_positions = []
-    tab_x = win_x + 15
+    tab_x = win_x + SETTINGS_TAB_START_X
 
     for tab in SETTINGS_TABS:
         if state.unicode_font:
             tw = rl.MeasureTextEx(state.unicode_font, tab["name"].encode('utf-8'), small_font, 1.0).x
         else:
             tw = len(tab["name"]) * (small_font // 2)
-        tab_w = int(tw) + tab_padding * 2
+        tab_w = int(tw) + SETTINGS_TAB_PADDING * 2
         tab_positions.append((tab_x, tab_w))
-        tab_x += tab_w + tab_gap
+        tab_x += tab_w + SETTINGS_TAB_GAP
 
     return tab_positions
 

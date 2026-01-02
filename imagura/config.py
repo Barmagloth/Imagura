@@ -113,8 +113,8 @@ BG_MODES = [
     {"color": (255, 255, 255), "opacity": 0.5, "blur": True},
 ]
 
-# Settings menu color schemes
-SETTINGS_COLORS_TRANSPARENT = {
+# Settings modal window color schemes (NOT app background!)
+SETTINGS_MODAL_COLORS_TRANSPARENT = {
     "window_bg": (180, 177, 173, 255),
     "window_border": (140, 135, 125, 255),
     "title_color": (50, 45, 40, 255),
@@ -138,7 +138,7 @@ SETTINGS_COLORS_TRANSPARENT = {
     "overlay": (80, 75, 70, 120),
 }
 
-SETTINGS_COLORS_LIGHT = {
+SETTINGS_MODAL_COLORS_LIGHT = {
     "window_bg": (185, 185, 185, 255),
     "window_border": (150, 150, 150, 255),
     "title_color": (30, 30, 30, 255),
@@ -162,7 +162,7 @@ SETTINGS_COLORS_LIGHT = {
     "overlay": (0, 0, 0, 100),
 }
 
-SETTINGS_COLORS_DARK = {
+SETTINGS_MODAL_COLORS_DARK = {
     "window_bg": (45, 47, 52, 255),
     "window_border": (80, 85, 95, 255),
     "title_color": (230, 230, 235, 255),
@@ -185,6 +185,30 @@ SETTINGS_COLORS_DARK = {
     "close_btn_hover": (210, 70, 70, 255),
     "overlay": (0, 0, 0, 150),
 }
+
+# Settings modal window dimensions and layout
+SETTINGS_MODAL_WIDTH = 600
+SETTINGS_MODAL_HEIGHT = 480
+SETTINGS_MODAL_SHADOW_OFFSET = 8
+SETTINGS_MODAL_TITLE_Y = 14
+SETTINGS_MODAL_CLOSE_SIZE = 28
+SETTINGS_MODAL_CLOSE_MARGIN = 12
+
+# Settings modal tabs
+SETTINGS_TAB_HEIGHT = 32
+SETTINGS_TAB_PADDING = 10  # Horizontal padding inside each tab
+SETTINGS_TAB_GAP = 2       # Gap between tabs
+SETTINGS_TAB_START_X = 15  # Left margin for tabs
+SETTINGS_TAB_TOP_Y = 45    # Distance from window top to tabs
+
+# Settings modal content area
+SETTINGS_CONTENT_PADDING_X = 25
+SETTINGS_CONTENT_ITEM_HEIGHT = 32
+SETTINGS_CONTENT_SUB_INDENT = 20  # Extra indent for sub-items
+SETTINGS_CONTENT_VALUE_WIDTH = 100
+SETTINGS_CONTENT_VALUE_MARGIN = 30
+SETTINGS_CONTENT_BORDER_MARGIN = 15
+SETTINGS_CONTENT_FOOTER_HEIGHT = 45
 
 # Window constraints
 MIN_WINDOW_WIDTH = 400
