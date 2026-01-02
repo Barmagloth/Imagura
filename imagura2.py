@@ -1617,7 +1617,7 @@ def get_settings_color_scheme(state: AppState) -> dict:
     if is_transparent:
         # Warm gray for transparent mode (darker)
         return {
-            "window_bg": (200, 197, 193, 250),  # Warm gray, darker
+            "window_bg": (160, 157, 153, 250),  # Darker warm gray
             "window_border": (200, 195, 185, 255),
             "title_color": (60, 55, 50, 255),
             "text_color": (50, 45, 40, 255),
@@ -1644,7 +1644,7 @@ def get_settings_color_scheme(state: AppState) -> dict:
     elif is_light_bg:
         # Light theme for white background (darker)
         return {
-            "window_bg": (210, 210, 210, 250),
+            "window_bg": (170, 170, 170, 250),  # Darker gray
             "window_border": (200, 200, 200, 255),
             "title_color": (40, 40, 40, 255),
             "text_color": (50, 50, 50, 255),
