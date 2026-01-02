@@ -601,7 +601,12 @@ def render_image_at(ti: TextureInfo, v: ViewParams, alpha: float = 1.0):
     if not tex_id or tex_id <= 0:
         return
     tint = RL_Color(255, 255, 255, int(255 * alpha))
-    rl.DrawTexturePro(ti.tex, RL_Rect(0, 0, ti.w, ti.h), RL_Rect(v.offx, v.offy, ti.w * v.scale, ti.h * v.scale),
+    # Round destination coordinates to prevent subpixel rendering artifacts (1px line at edges)
+    dst_x = round(v.offx)
+    dst_y = round(v.offy)
+    dst_w = round(ti.w * v.scale)
+    dst_h = round(ti.h * v.scale)
+    rl.DrawTexturePro(ti.tex, RL_Rect(0, 0, ti.w, ti.h), RL_Rect(dst_x, dst_y, dst_w, dst_h),
                       RL_V2(0, 0), 0.0, tint)
 
 
