@@ -1343,9 +1343,11 @@ def draw_toolbar(state: AppState):
 
         # Draw separator after this button if needed
         if btn.separator_after and i < n_buttons - 1:
-            # Add separator space first, then draw in the middle
+            # Add separator space first, then draw in the middle of the gap
             current_x += separator_width
-            sep_x = current_x - separator_width // 2 - TOOLBAR_BTN_SPACING // 2
+            # Gap is between prev button right edge and next button left edge
+            # sep_x = midpoint = current_x - TOOLBAR_BTN_RADIUS - (separator_width + TOOLBAR_BTN_SPACING) / 2
+            sep_x = current_x - TOOLBAR_BTN_RADIUS - (separator_width + TOOLBAR_BTN_SPACING) // 2
             sep_alpha = int(150 * alpha)
             rl.DrawLineEx(RL_V2(sep_x, cy - TOOLBAR_BTN_RADIUS * 0.7),
                          RL_V2(sep_x, cy + TOOLBAR_BTN_RADIUS * 0.7),
@@ -1613,9 +1615,9 @@ def get_settings_color_scheme(state: AppState) -> dict:
     is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
 
     if is_transparent:
-        # Warm light gray for transparent mode
+        # Warm gray for transparent mode (darker)
         return {
-            "window_bg": (245, 242, 238, 250),  # Warm light gray
+            "window_bg": (200, 197, 193, 250),  # Warm gray, darker
             "window_border": (200, 195, 185, 255),
             "title_color": (60, 55, 50, 255),
             "text_color": (50, 45, 40, 255),
@@ -1640,9 +1642,9 @@ def get_settings_color_scheme(state: AppState) -> dict:
             "overlay": (100, 95, 90, 100),
         }
     elif is_light_bg:
-        # Light theme for white background
+        # Light theme for white background (darker)
         return {
-            "window_bg": (252, 252, 252, 250),
+            "window_bg": (210, 210, 210, 250),
             "window_border": (200, 200, 200, 255),
             "title_color": (40, 40, 40, 255),
             "text_color": (50, 50, 50, 255),
@@ -1667,9 +1669,9 @@ def get_settings_color_scheme(state: AppState) -> dict:
             "overlay": (0, 0, 0, 80),
         }
     else:
-        # Dark theme for black background
+        # Dark theme for black background (slightly darker)
         return {
-            "window_bg": (32, 34, 38, 250),
+            "window_bg": (26, 28, 32, 250),
             "window_border": (70, 75, 85, 255),
             "title_color": (240, 240, 245, 255),
             "text_color": (220, 220, 225, 255),
