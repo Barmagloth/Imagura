@@ -113,8 +113,8 @@ BG_MODES = [
     {"color": (255, 255, 255), "opacity": 0.5, "blur": True},
 ]
 
-# Settings menu color schemes
-SETTINGS_COLORS_TRANSPARENT = {
+# Settings modal window color schemes (NOT app background!)
+SETTINGS_MODAL_COLORS_TRANSPARENT = {
     "window_bg": (180, 177, 173, 255),
     "window_border": (140, 135, 125, 255),
     "title_color": (50, 45, 40, 255),
@@ -138,7 +138,7 @@ SETTINGS_COLORS_TRANSPARENT = {
     "overlay": (80, 75, 70, 120),
 }
 
-SETTINGS_COLORS_LIGHT = {
+SETTINGS_MODAL_COLORS_LIGHT = {
     "window_bg": (185, 185, 185, 255),
     "window_border": (150, 150, 150, 255),
     "title_color": (30, 30, 30, 255),
@@ -162,7 +162,7 @@ SETTINGS_COLORS_LIGHT = {
     "overlay": (0, 0, 0, 100),
 }
 
-SETTINGS_COLORS_DARK = {
+SETTINGS_MODAL_COLORS_DARK = {
     "window_bg": (45, 47, 52, 255),
     "window_border": (80, 85, 95, 255),
     "title_color": (230, 230, 235, 255),

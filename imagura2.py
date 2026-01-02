@@ -37,7 +37,7 @@ from imagura.config import (
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA, GALLERY_SETTLE_DEBOUNCE_S,
     THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
     DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
-    SETTINGS_COLORS_TRANSPARENT, SETTINGS_COLORS_LIGHT, SETTINGS_COLORS_DARK,
+    SETTINGS_MODAL_COLORS_TRANSPARENT, SETTINGS_MODAL_COLORS_LIGHT, SETTINGS_MODAL_COLORS_DARK,
     KEY_REPEAT_DELAY, KEY_REPEAT_INTERVAL,
     TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
     TOOLBAR_BG_ALPHA, TOOLBAR_SLIDE_MS,
@@ -1616,11 +1616,11 @@ def get_settings_color_scheme(state: AppState) -> dict:
     is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
 
     if is_transparent:
-        return SETTINGS_COLORS_TRANSPARENT
+        return SETTINGS_MODAL_COLORS_TRANSPARENT
     elif is_light_bg:
-        return SETTINGS_COLORS_LIGHT
+        return SETTINGS_MODAL_COLORS_LIGHT
     else:
-        return SETTINGS_COLORS_DARK
+        return SETTINGS_MODAL_COLORS_DARK
 
 
 def handle_settings_input(state: AppState) -> bool:
@@ -2167,7 +2167,7 @@ def draw_settings_window(state: AppState):
 
 def _get_tab_positions(state: AppState, win_x: int, small_font: int) -> list:
     """Calculate tab positions and widths based on text content."""
-    tab_padding = 16
+    tab_padding = 10  # Must match draw_settings_window!
     tab_gap = 2
     tab_positions = []
     tab_x = win_x + 15
