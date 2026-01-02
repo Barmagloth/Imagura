@@ -1338,12 +1338,13 @@ def draw_toolbar(state: AppState):
 
         # Draw separator after this button if needed
         if btn.separator_after and i < n_buttons - 1:
-            sep_x = current_x - TOOLBAR_BTN_SPACING // 2
+            # Add separator space first, then draw in the middle
+            current_x += separator_width
+            sep_x = current_x - separator_width // 2 - TOOLBAR_BTN_SPACING // 2
             sep_alpha = int(150 * alpha)
             rl.DrawLineEx(RL_V2(sep_x, cy - TOOLBAR_BTN_RADIUS * 0.7),
                          RL_V2(sep_x, cy + TOOLBAR_BTN_RADIUS * 0.7),
                          2.0, RL_Color(255, 255, 255, sep_alpha))
-            current_x += separator_width
 
 
 def get_context_menu_item_at(state: AppState, mx: float, my: float) -> int:
