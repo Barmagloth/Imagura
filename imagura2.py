@@ -1634,7 +1634,7 @@ def handle_settings_input(state: AppState) -> bool:
     mouse = rl.GetMousePosition()
 
     # Window dimensions
-    win_w = 520
+    win_w = 600
     win_h = 480
     win_x = (state.screenW - win_w) // 2
     win_y = (state.screenH - win_h) // 2
@@ -1883,7 +1883,7 @@ def draw_settings_window(state: AppState):
     colors = get_settings_color_scheme(state)
 
     # Window dimensions
-    win_w = 520
+    win_w = 600
     win_h = 480
     win_x = (state.screenW - win_w) // 2
     win_y = (state.screenH - win_h) // 2
@@ -1923,7 +1923,7 @@ def draw_settings_window(state: AppState):
     # Tab bar - calculate widths based on text content
     tab_y = win_y + 45
     tab_h = 32
-    tab_padding = 16  # Horizontal padding inside each tab
+    tab_padding = 10  # Horizontal padding inside each tab
     tab_gap = 2  # Gap between tabs
 
     # Measure tab widths
