@@ -1615,9 +1615,9 @@ def get_settings_color_scheme(state: AppState) -> dict:
     is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
 
     if is_transparent:
-        # Warm gray for transparent mode (darker)
+        # Warm gray for transparent mode (much darker)
         return {
-            "window_bg": (160, 157, 153, 250),  # Darker warm gray
+            "window_bg": (120, 118, 115, 255),  # Much darker, fully opaque
             "window_border": (200, 195, 185, 255),
             "title_color": (60, 55, 50, 255),
             "text_color": (50, 45, 40, 255),
@@ -1642,9 +1642,9 @@ def get_settings_color_scheme(state: AppState) -> dict:
             "overlay": (100, 95, 90, 100),
         }
     elif is_light_bg:
-        # Light theme for white background (darker)
+        # Light theme for white background (much darker)
         return {
-            "window_bg": (170, 170, 170, 250),  # Darker gray
+            "window_bg": (130, 130, 130, 255),  # Much darker, fully opaque
             "window_border": (200, 200, 200, 255),
             "title_color": (40, 40, 40, 255),
             "text_color": (50, 50, 50, 255),
