@@ -601,7 +601,12 @@ def render_image_at(ti: TextureInfo, v: ViewParams, alpha: float = 1.0):
     if not tex_id or tex_id <= 0:
         return
     tint = RL_Color(255, 255, 255, int(255 * alpha))
-    rl.DrawTexturePro(ti.tex, RL_Rect(0, 0, ti.w, ti.h), RL_Rect(v.offx, v.offy, ti.w * v.scale, ti.h * v.scale),
+    # Round destination coordinates to prevent subpixel rendering artifacts (1px line at edges)
+    dst_x = round(v.offx)
+    dst_y = round(v.offy)
+    dst_w = round(ti.w * v.scale)
+    dst_h = round(ti.h * v.scale)
+    rl.DrawTexturePro(ti.tex, RL_Rect(0, 0, ti.w, ti.h), RL_Rect(dst_x, dst_y, dst_w, dst_h),
                       RL_V2(0, 0), 0.0, tint)
 
 
@@ -1338,12 +1343,13 @@ def draw_toolbar(state: AppState):
 
         # Draw separator after this button if needed
         if btn.separator_after and i < n_buttons - 1:
-            sep_x = current_x - TOOLBAR_BTN_SPACING // 2
+            # Add separator space first, then draw in the middle
+            current_x += separator_width
+            sep_x = current_x - separator_width // 2 - TOOLBAR_BTN_SPACING // 2
             sep_alpha = int(150 * alpha)
             rl.DrawLineEx(RL_V2(sep_x, cy - TOOLBAR_BTN_RADIUS * 0.7),
                          RL_V2(sep_x, cy + TOOLBAR_BTN_RADIUS * 0.7),
                          2.0, RL_Color(255, 255, 255, sep_alpha))
-            current_x += separator_width
 
 
 def get_context_menu_item_at(state: AppState, mx: float, my: float) -> int:
