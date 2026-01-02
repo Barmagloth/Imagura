@@ -30,7 +30,8 @@ from .config import (
     ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS,
     GALLERY_HEIGHT_FRAC, GALLERY_TRIGGER_FRAC,
     CLOSE_BTN_RADIUS, CLOSE_BTN_MARGIN,
-    TOOLBAR_TRIGGER_FRAC, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
+    TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX,
+    TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
     MENU_ITEM_HEIGHT, MENU_ITEM_WIDTH, MENU_PADDING,
 )
 from .state.ui import MenuItemId, ToolbarButtonId
@@ -147,8 +148,30 @@ class InputHandler:
         return x1 <= mouse.x <= x2 and y1 <= mouse.y <= y2
 
     def is_in_toolbar_zone(self, state: "AppState", mouse: MouseState) -> bool:
-        """Check if mouse is in toolbar trigger zone (top 5% of screen)."""
-        return mouse.y < state.screenH * TOOLBAR_TRIGGER_FRAC
+        """Check if mouse is in toolbar trigger zone (within panel bounds)."""
+        # Use adaptive trigger zone: at least TOOLBAR_TRIGGER_MIN_PX or 5% of screen
+        trigger_height = max(state.screenH * TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX)
+        if mouse.y >= trigger_height:
+            return False
+        # Check if within panel horizontal bounds
+        panel_x, panel_width = self._get_toolbar_panel_bounds(state)
+        return panel_x <= mouse.x <= panel_x + panel_width
+
+    def _get_toolbar_panel_bounds(self, state: "AppState") -> tuple:
+        """Get toolbar panel bounds (x, width)."""
+        sw = state.screenW
+        toolbar = state.ui.toolbar
+        n_buttons = len(toolbar.buttons)
+        n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
+        separator_width = TOOLBAR_BTN_SPACING
+
+        buttons_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
+                         (n_buttons - 1) * TOOLBAR_BTN_SPACING +
+                         n_separators * separator_width)
+        min_panel_width = buttons_width + TOOLBAR_BTN_RADIUS * 2 * 2
+        panel_width = max(min_panel_width, int(sw * 0.6))
+        panel_x = (sw - panel_width) // 2
+        return (panel_x, panel_width)
 
     def get_toolbar_button_at(self, state: "AppState", mouse: MouseState) -> int:
         """Get toolbar button index at mouse position, or -1 if none."""
@@ -157,16 +180,28 @@ class InputHandler:
             return -1
 
         n_buttons = len(toolbar.buttons)
-        total_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
+        n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
+        separator_width = TOOLBAR_BTN_SPACING
+
+        total_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
+                       (n_buttons - 1) * TOOLBAR_BTN_SPACING +
+                       n_separators * separator_width)
         start_x = (state.screenW - total_width) // 2 + TOOLBAR_BTN_RADIUS
         cy = TOOLBAR_HEIGHT // 2
 
-        for i in range(n_buttons):
-            cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+        current_x = start_x
+        for i, btn in enumerate(toolbar.buttons):
+            cx = current_x
             dx = mouse.x - cx
             dy = mouse.y - cy
             if (dx * dx + dy * dy) <= (TOOLBAR_BTN_RADIUS * TOOLBAR_BTN_RADIUS):
                 return i
+
+            # Move to next button position
+            current_x += TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING
+            if btn.separator_after:
+                current_x += separator_width
+
         return -1
 
     def is_in_context_menu(self, state: "AppState", mouse: MouseState) -> bool:

@@ -505,19 +505,45 @@ class Renderer:
         sw = state.screenW
         alpha = toolbar.alpha
 
-        # Background panel
-        bg_alpha = int(255 * TOOLBAR_BG_ALPHA * alpha)
-        rl.DrawRectangle(0, 0, sw, TOOLBAR_HEIGHT, RL_Color(0, 0, 0, bg_alpha))
-
-        # Calculate button positions (centered)
+        # Count separators for width calculation
         n_buttons = len(toolbar.buttons)
-        total_width = n_buttons * (TOOLBAR_BTN_RADIUS * 2) + (n_buttons - 1) * TOOLBAR_BTN_SPACING
-        start_x = (sw - total_width) // 2 + TOOLBAR_BTN_RADIUS
+        n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
+        separator_width = TOOLBAR_BTN_SPACING
 
+        buttons_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
+                         (n_buttons - 1) * TOOLBAR_BTN_SPACING +
+                         n_separators * separator_width)
+        min_panel_width = buttons_width + TOOLBAR_BTN_RADIUS * 2 * 2
+        panel_width = max(min_panel_width, int(sw * 0.6))
+
+        panel_x = (sw - panel_width) // 2
+        fade_width = 40
+
+        # Draw background panel with gradient edges
+        bg_alpha_max = int(255 * TOOLBAR_BG_ALPHA * alpha)
+
+        # Left fade gradient
+        for i in range(fade_width):
+            fade_alpha = int(bg_alpha_max * (i / fade_width))
+            rl.DrawRectangle(panel_x + i, 0, 1, TOOLBAR_HEIGHT, RL_Color(0, 0, 0, fade_alpha))
+
+        # Center solid part
+        rl.DrawRectangle(panel_x + fade_width, 0, panel_width - fade_width * 2, TOOLBAR_HEIGHT,
+                        RL_Color(0, 0, 0, bg_alpha_max))
+
+        # Right fade gradient
+        for i in range(fade_width):
+            fade_alpha = int(bg_alpha_max * (1.0 - i / fade_width))
+            rl.DrawRectangle(panel_x + panel_width - fade_width + i, 0, 1, TOOLBAR_HEIGHT,
+                            RL_Color(0, 0, 0, fade_alpha))
+
+        # Calculate button start position (centered within panel)
+        start_x = (sw - buttons_width) // 2 + TOOLBAR_BTN_RADIUS
         cy = TOOLBAR_HEIGHT // 2
 
+        current_x = start_x
         for i, btn in enumerate(toolbar.buttons):
-            cx = start_x + i * (TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING)
+            cx = current_x
             is_hover = (i == toolbar.hover_index)
 
             # Button background
@@ -529,56 +555,135 @@ class Renderer:
             # Draw icon based on button type
             self._draw_toolbar_icon(cx, cy, btn.id, RL_Color(255, 255, 255, btn_alpha))
 
+            # Move to next button position
+            current_x += TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING
+
+            # Draw separator after this button if needed
+            if btn.separator_after and i < n_buttons - 1:
+                current_x += separator_width
+                sep_x = current_x - TOOLBAR_BTN_RADIUS - (separator_width + TOOLBAR_BTN_SPACING) // 2
+                sep_alpha = int(150 * alpha)
+                rl.DrawLineEx(RL_V2(sep_x, cy - TOOLBAR_BTN_RADIUS * 0.7),
+                             RL_V2(sep_x, cy + TOOLBAR_BTN_RADIUS * 0.7),
+                             2.0, RL_Color(255, 255, 255, sep_alpha))
+
     def _draw_toolbar_icon(self, cx: int, cy: int, btn_id: ToolbarButtonId, color) -> None:
         """Draw toolbar button icon."""
         r = TOOLBAR_BTN_RADIUS * 0.45
 
-        if btn_id == ToolbarButtonId.ROTATE_CW:
-            # Clockwise arrow arc
+        if btn_id == ToolbarButtonId.SETTINGS:
+            self._draw_gear_icon(cx, cy, r, color)
+        elif btn_id == ToolbarButtonId.ROTATE_CW:
             self._draw_rotate_icon(cx, cy, r, clockwise=True, color=color)
         elif btn_id == ToolbarButtonId.ROTATE_CCW:
-            # Counter-clockwise arrow arc
             self._draw_rotate_icon(cx, cy, r, clockwise=False, color=color)
         elif btn_id == ToolbarButtonId.FLIP_H:
-            # Horizontal flip icon (two arrows)
             self._draw_flip_icon(cx, cy, r, color)
 
     def _draw_rotate_icon(self, cx: int, cy: int, r: float, clockwise: bool, color) -> None:
         """Draw rotation arrow icon."""
-        # Draw arc using line segments
         import math
         segments = 8
-        start_angle = -60 if clockwise else 120
-        arc_span = 240
 
-        points = []
-        for i in range(segments + 1):
-            angle = math.radians(start_angle + (arc_span * i / segments))
-            if not clockwise:
-                angle = math.radians(start_angle + 180 - (arc_span * i / segments))
-            px = cx + r * math.cos(angle)
-            py = cy + r * math.sin(angle)
-            points.append((px, py))
-
-        for i in range(len(points) - 1):
-            rl.DrawLineEx(RL_V2(points[i][0], points[i][1]),
-                         RL_V2(points[i+1][0], points[i+1][1]), 2.0, color)
-
-        # Arrow head at the end
-        end_x, end_y = points[-1]
-        arrow_size = r * 0.4
         if clockwise:
-            # Arrow pointing down-right
+            # Arc from top going clockwise (right, down, left)
+            start_angle = -120
+            arc_span = 270
+            points = []
+            for i in range(segments + 1):
+                angle = math.radians(start_angle + (arc_span * i / segments))
+                px = cx + r * math.cos(angle)
+                py = cy + r * math.sin(angle)
+                points.append((px, py))
+
+            # Draw arc
+            for i in range(len(points) - 1):
+                rl.DrawLineEx(RL_V2(points[i][0], points[i][1]),
+                             RL_V2(points[i+1][0], points[i+1][1]), 2.0, color)
+
+            # Arrowhead at end - pointing in clockwise direction (tangent)
+            end_angle = math.radians(start_angle + arc_span)
+            end_x, end_y = points[-1]
+            arrow_size = r * 0.5
+            tangent_angle = end_angle + math.pi / 2
+            arr_angle1 = tangent_angle + math.radians(150)
+            arr_angle2 = tangent_angle - math.radians(150)
             rl.DrawLineEx(RL_V2(end_x, end_y),
-                         RL_V2(end_x - arrow_size, end_y - arrow_size * 0.5), 2.0, color)
+                         RL_V2(end_x + arrow_size * math.cos(arr_angle1),
+                               end_y + arrow_size * math.sin(arr_angle1)), 2.0, color)
             rl.DrawLineEx(RL_V2(end_x, end_y),
-                         RL_V2(end_x + arrow_size * 0.3, end_y - arrow_size), 2.0, color)
+                         RL_V2(end_x + arrow_size * math.cos(arr_angle2),
+                               end_y + arrow_size * math.sin(arr_angle2)), 2.0, color)
         else:
-            # Arrow pointing down-left
+            # Counter-clockwise: arc from top going left, down, right
+            start_angle = -60
+            arc_span = 270
+            points = []
+            for i in range(segments + 1):
+                angle = math.radians(start_angle - (arc_span * i / segments))
+                px = cx + r * math.cos(angle)
+                py = cy + r * math.sin(angle)
+                points.append((px, py))
+
+            # Draw arc
+            for i in range(len(points) - 1):
+                rl.DrawLineEx(RL_V2(points[i][0], points[i][1]),
+                             RL_V2(points[i+1][0], points[i+1][1]), 2.0, color)
+
+            # Arrowhead at end
+            end_angle = math.radians(start_angle - arc_span)
+            end_x, end_y = points[-1]
+            arrow_size = r * 0.5
+            tangent_angle = end_angle - math.pi / 2
+            arr_angle1 = tangent_angle + math.radians(150)
+            arr_angle2 = tangent_angle - math.radians(150)
             rl.DrawLineEx(RL_V2(end_x, end_y),
-                         RL_V2(end_x + arrow_size, end_y - arrow_size * 0.5), 2.0, color)
+                         RL_V2(end_x + arrow_size * math.cos(arr_angle1),
+                               end_y + arrow_size * math.sin(arr_angle1)), 2.0, color)
             rl.DrawLineEx(RL_V2(end_x, end_y),
-                         RL_V2(end_x - arrow_size * 0.3, end_y - arrow_size), 2.0, color)
+                         RL_V2(end_x + arrow_size * math.cos(arr_angle2),
+                               end_y + arrow_size * math.sin(arr_angle2)), 2.0, color)
+
+    def _draw_gear_icon(self, cx: int, cy: int, r: float, color) -> None:
+        """Draw gear/settings icon."""
+        import math
+        teeth = 8
+        outer_r = r
+        inner_r = r * 0.6
+        tooth_depth = r * 0.25
+
+        # Draw gear teeth
+        for i in range(teeth):
+            angle = (2 * math.pi * i / teeth)
+
+            # Tooth outer corners
+            x1 = cx + (outer_r + tooth_depth) * math.cos(angle - math.pi / teeth / 2)
+            y1 = cy + (outer_r + tooth_depth) * math.sin(angle - math.pi / teeth / 2)
+            x2 = cx + (outer_r + tooth_depth) * math.cos(angle + math.pi / teeth / 2)
+            y2 = cy + (outer_r + tooth_depth) * math.sin(angle + math.pi / teeth / 2)
+
+            # Tooth base corners
+            x3 = cx + outer_r * math.cos(angle + math.pi / teeth / 2)
+            y3 = cy + outer_r * math.sin(angle + math.pi / teeth / 2)
+            next_angle = (2 * math.pi * (i + 0.5) / teeth)
+            x4 = cx + outer_r * math.cos(next_angle - math.pi / teeth / 2)
+            y4 = cy + outer_r * math.sin(next_angle - math.pi / teeth / 2)
+
+            # Draw tooth
+            rl.DrawLineEx(RL_V2(x1, y1), RL_V2(x2, y2), 2.0, color)
+            rl.DrawLineEx(RL_V2(x2, y2), RL_V2(x3, y3), 2.0, color)
+            rl.DrawLineEx(RL_V2(x3, y3), RL_V2(x4, y4), 2.0, color)
+
+        # Draw inner circle (hole)
+        segments = 16
+        for i in range(segments):
+            angle1 = 2 * math.pi * i / segments
+            angle2 = 2 * math.pi * (i + 1) / segments
+            x1 = cx + inner_r * math.cos(angle1)
+            y1 = cy + inner_r * math.sin(angle1)
+            x2 = cx + inner_r * math.cos(angle2)
+            y2 = cy + inner_r * math.sin(angle2)
+            rl.DrawLineEx(RL_V2(x1, y1), RL_V2(x2, y2), 2.0, color)
 
     def _draw_flip_icon(self, cx: int, cy: int, r: float, color) -> None:
         """Draw horizontal flip icon."""
