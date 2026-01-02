@@ -37,6 +37,7 @@ from imagura.config import (
     GALLERY_MIN_SCALE, GALLERY_MIN_ALPHA, GALLERY_SETTLE_DEBOUNCE_S,
     THUMB_CACHE_LIMIT, THUMB_PRELOAD_SPAN, THUMB_BUILD_BUDGET_PER_FRAME,
     DOUBLE_CLICK_TIME_MS, IDLE_THRESHOLD_SECONDS, BG_MODES,
+    SETTINGS_COLORS_TRANSPARENT, SETTINGS_COLORS_LIGHT, SETTINGS_COLORS_DARK,
     KEY_REPEAT_DELAY, KEY_REPEAT_INTERVAL,
     TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX, TOOLBAR_HEIGHT, TOOLBAR_BTN_RADIUS, TOOLBAR_BTN_SPACING,
     TOOLBAR_BG_ALPHA, TOOLBAR_SLIDE_MS,
@@ -1604,7 +1605,7 @@ def validate_settings_value(value_str: str, val_type: type, min_val, max_val) ->
 
 
 def get_settings_color_scheme(state: AppState) -> dict:
-    """Get color scheme based on current background mode."""
+    """Get color scheme based on current background mode. Colors defined in config.py."""
     bg_color = state.ui.bg_color
     opacity = state.ui.bg_current_opacity
 
@@ -1615,86 +1616,11 @@ def get_settings_color_scheme(state: AppState) -> dict:
     is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
 
     if is_transparent:
-        # Warm gray for transparent mode (much darker)
-        return {
-            "window_bg": (120, 118, 115, 255),  # Much darker, fully opaque
-            "window_border": (200, 195, 185, 255),
-            "title_color": (60, 55, 50, 255),
-            "text_color": (50, 45, 40, 255),
-            "text_secondary": (100, 95, 90, 255),
-            "header_bg": (230, 225, 218, 255),
-            "header_text": (80, 75, 70, 255),
-            "input_bg": (255, 252, 248, 255),
-            "input_border": (180, 175, 165, 255),
-            "input_text": (40, 35, 30, 255),
-            "input_active_border": (100, 140, 180, 255),
-            "input_active_bg": (255, 255, 252, 255),
-            "value_color": (70, 120, 160, 255),
-            "hover_bg": (235, 230, 222, 255),
-            "selection_bg": (180, 200, 220, 200),
-            "tab_active": (255, 252, 248, 255),
-            "tab_inactive": (225, 220, 212, 255),
-            "tab_text": (70, 65, 60, 255),
-            "tab_text_active": (40, 35, 30, 255),
-            "hint_color": (130, 125, 120, 255),
-            "close_btn": (150, 100, 100, 255),
-            "close_btn_hover": (200, 80, 80, 255),
-            "overlay": (100, 95, 90, 100),
-        }
+        return SETTINGS_COLORS_TRANSPARENT
     elif is_light_bg:
-        # Light theme for white background (much darker)
-        return {
-            "window_bg": (130, 130, 130, 255),  # Much darker, fully opaque
-            "window_border": (200, 200, 200, 255),
-            "title_color": (40, 40, 40, 255),
-            "text_color": (50, 50, 50, 255),
-            "text_secondary": (100, 100, 100, 255),
-            "header_bg": (235, 235, 235, 255),
-            "header_text": (80, 80, 80, 255),
-            "input_bg": (255, 255, 255, 255),
-            "input_border": (180, 180, 180, 255),
-            "input_text": (30, 30, 30, 255),
-            "input_active_border": (80, 140, 200, 255),
-            "input_active_bg": (250, 252, 255, 255),
-            "value_color": (50, 120, 180, 255),
-            "hover_bg": (240, 245, 250, 255),
-            "selection_bg": (180, 210, 240, 200),
-            "tab_active": (255, 255, 255, 255),
-            "tab_inactive": (230, 230, 230, 255),
-            "tab_text": (80, 80, 80, 255),
-            "tab_text_active": (30, 30, 30, 255),
-            "hint_color": (140, 140, 140, 255),
-            "close_btn": (160, 80, 80, 255),
-            "close_btn_hover": (220, 60, 60, 255),
-            "overlay": (0, 0, 0, 80),
-        }
+        return SETTINGS_COLORS_LIGHT
     else:
-        # Dark theme for black background (slightly darker)
-        return {
-            "window_bg": (26, 28, 32, 250),
-            "window_border": (70, 75, 85, 255),
-            "title_color": (240, 240, 245, 255),
-            "text_color": (220, 220, 225, 255),
-            "text_secondary": (160, 160, 170, 255),
-            "header_bg": (45, 48, 55, 255),
-            "header_text": (180, 180, 190, 255),
-            "input_bg": (40, 42, 48, 255),
-            "input_border": (80, 85, 95, 255),
-            "input_text": (240, 240, 245, 255),
-            "input_active_border": (100, 160, 220, 255),
-            "input_active_bg": (45, 50, 60, 255),
-            "value_color": (120, 180, 240, 255),
-            "hover_bg": (50, 55, 65, 255),
-            "selection_bg": (70, 110, 160, 200),
-            "tab_active": (50, 55, 65, 255),
-            "tab_inactive": (38, 40, 45, 255),
-            "tab_text": (160, 160, 170, 255),
-            "tab_text_active": (240, 240, 245, 255),
-            "hint_color": (120, 120, 130, 255),
-            "close_btn": (180, 100, 100, 255),
-            "close_btn_hover": (240, 80, 80, 255),
-            "overlay": (0, 0, 0, 150),
-        }
+        return SETTINGS_COLORS_DARK
 
 
 def handle_settings_input(state: AppState) -> bool:
