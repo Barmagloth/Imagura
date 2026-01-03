@@ -1607,9 +1607,9 @@ def validate_settings_value(value_str: str, val_type: type, min_val, max_val) ->
 def get_settings_color_scheme(state: AppState) -> dict:
     """Get color scheme based on current background mode. Colors defined in config.py."""
     bg_color = state.ui.bg_color
-    opacity = state.ui.bg_current_opacity
+    opacity = state.ui.bg_target_opacity
 
-    # Check if transparent mode (opacity < 1.0)
+    # Check if transparent mode (target opacity < 1.0, i.e. blur or transparent modes)
     is_transparent = opacity < 1.0
 
     # Check if light or dark background
