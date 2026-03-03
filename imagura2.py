@@ -2658,12 +2658,24 @@ def preload_neighbors(state: AppState, new_index: int, skip_neighbors: bool = Fa
 
     log(f"[PRELOAD] Starting async load for index={new_index} path={os.path.basename(current_path)} heavy={is_heavy} skip_neighbors={skip_neighbors}")
 
+    def _is_texture_in_use(ti: Optional[TextureInfo]) -> bool:
+        """Check if texture is still referenced by animation snapshots."""
+        if not ti:
+            return False
+        tex = getattr(ti, 'tex', None)
+        if not tex:
+            return False
+        for ref in (state.waiting_prev_snapshot, state.switch_anim_prev_tex):
+            if ref and getattr(ref, 'tex', None) is tex:
+                return True
+        return False
+
     def on_current_loaded(path: str, img, error: Optional[Exception]):
         if error:
             log(f"[ASYNC][CURRENT][ERR] {os.path.basename(path)}: {error!r}")
             state.loading_current = False
             try:
-                if state.cache.curr:
+                if state.cache.curr and not _is_texture_in_use(state.cache.curr):
                     unload_texture_deferred(state, state.cache.curr)
                 ph = rl.GenImageColor(2, 2, _RL_WHITE)
                 tex = rl.LoadTextureFromImage(ph)
@@ -2674,7 +2686,7 @@ def preload_neighbors(state: AppState, new_index: int, skip_neighbors: bool = Fa
             return
 
         try:
-            if state.cache.curr:
+            if state.cache.curr and not _is_texture_in_use(state.cache.curr):
                 unload_texture_deferred(state, state.cache.curr)
             state.cache.curr = image_to_textureinfo(img, path)
             state.loading_current = False
