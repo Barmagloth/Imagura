@@ -27,7 +27,7 @@ def compute_fit_scale(
     Returns:
         Scale factor to fit image.
     """
-    if img_w == 0 or img_h == 0:
+    if img_w == 0 or img_h == 0 or screen_w == 0 or screen_h == 0:
         return 1.0
     return min(screen_w * frac / img_w, screen_h * frac / img_h)
 

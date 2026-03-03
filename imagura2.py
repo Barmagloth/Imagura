@@ -1558,7 +1558,7 @@ def save_config_value(config_key: str, value, val_type: type) -> bool:
         import re
         if val_type == float:
             pattern = rf'^({config_key}\s*=\s*)[\d.]+(.*)$'
-            replacement = rf'\g<1>{value}\2'
+            replacement = rf'\g<1>{round(float(value), 6)}\2'
         else:
             pattern = rf'^({config_key}\s*=\s*)\d+(.*)$'
             replacement = rf'\g<1>{int(value)}\2'
@@ -2663,6 +2663,8 @@ def preload_neighbors(state: AppState, new_index: int, skip_neighbors: bool = Fa
             log(f"[ASYNC][CURRENT][ERR] {os.path.basename(path)}: {error!r}")
             state.loading_current = False
             try:
+                if state.cache.curr:
+                    unload_texture_deferred(state, state.cache.curr)
                 ph = rl.GenImageColor(2, 2, _RL_WHITE)
                 tex = rl.LoadTextureFromImage(ph)
                 rl.UnloadImage(ph)
@@ -2672,6 +2674,8 @@ def preload_neighbors(state: AppState, new_index: int, skip_neighbors: bool = Fa
             return
 
         try:
+            if state.cache.curr:
+                unload_texture_deferred(state, state.cache.curr)
             state.cache.curr = image_to_textureinfo(img, path)
             state.loading_current = False
             state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
@@ -2698,7 +2702,7 @@ def preload_neighbors(state: AppState, new_index: int, skip_neighbors: bool = Fa
 
             if state.waiting_for_switch and state.pending_target_index is not None:
                 log(f"[SWITCH_ANIM] About to start: pending_duration={state.pending_switch_duration_ms}ms waiting={state.waiting_for_switch} target={state.pending_target_index}")
-                direction = 1 if state.pending_target_index > old_index else -1
+                direction = 1 if new_index > old_index else -1
                 if state.waiting_prev_snapshot:
                     state.switch_anim_prev_tex = state.waiting_prev_snapshot
                     state.switch_anim_prev_view = state.waiting_prev_view
@@ -2731,25 +2735,24 @@ def preload_neighbors(state: AppState, new_index: int, skip_neighbors: bool = Fa
         log(f"[PRELOAD] Skipping neighbors/thumbs during animation")
         return
 
+    # Capture expected neighbor paths at submission time to avoid index drift
+    expected_prev_path = state.current_dir_images[new_index - 1] if new_index - 1 >= 0 else None
+    expected_next_path = state.current_dir_images[new_index + 1] if new_index + 1 < n else None
+
     def on_neighbor_loaded(path: str, img, error: Optional[Exception]):
         if error:
             log(f"[ASYNC][NEIGHBOR][ERR] {os.path.basename(path)}: {error!r}")
             return
 
         try:
-            idx = state.current_dir_images.index(path)
-        except ValueError:
-            return
-
-        try:
             tex_info = image_to_textureinfo(img, path)
 
-            if idx == state.index - 1:
+            if path == expected_prev_path:
                 if state.cache.prev:
                     unload_texture_deferred(state, state.cache.prev)
                 state.cache.prev = tex_info
                 log(f"[ASYNC][PREV] Loaded: {os.path.basename(path)}")
-            elif idx == state.index + 1:
+            elif path == expected_next_path:
                 if state.cache.next:
                     unload_texture_deferred(state, state.cache.next)
                 state.cache.next = tex_info
@@ -3368,7 +3371,8 @@ def main():
 
                 gh = get_gallery_height(state.screenH)
                 yv = state.screenH - gh
-                in_gallery_panel = (yv <= mouse.y <= state.screenH)
+                gallery_is_visible = state.gallery_y < state.screenH
+                in_gallery_panel = gallery_is_visible and (yv <= mouse.y <= state.screenH)
 
                 if not is_significantly_zoomed and not in_gallery_panel and not input_consumed:
                     if edge_right and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):

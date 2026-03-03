@@ -33,13 +33,22 @@ def rotate_image_file(image_path: str, clockwise: bool = True) -> bool:
         angle = -90 if clockwise else 90
         rotated = img.rotate(angle, expand=True)
 
-        # Preserve format and EXIF if possible
+        # Preserve format and EXIF if possible, but reset orientation tag
         fmt = img.format or 'PNG'
-        exif = img.info.get('exif')
+        exif_bytes = img.info.get('exif')
 
         save_kwargs = {}
-        if exif and fmt.upper() in ('JPEG', 'JPG', 'WEBP', 'TIFF'):
-            save_kwargs['exif'] = exif
+        if exif_bytes and fmt.upper() in ('JPEG', 'JPG', 'WEBP', 'TIFF'):
+            try:
+                import piexif
+                exif_dict = piexif.load(exif_bytes)
+                # Reset orientation to normal (1) since we physically rotated
+                if piexif.ImageIFD.Orientation in exif_dict.get("0th", {}):
+                    exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+                save_kwargs['exif'] = piexif.dump(exif_dict)
+            except Exception:
+                # piexif not available — strip exif to avoid double-rotation
+                pass
         if fmt.upper() in ('JPEG', 'JPG'):
             save_kwargs['quality'] = 95
             save_kwargs['optimize'] = True
@@ -76,13 +85,20 @@ def flip_image_file(image_path: str, horizontal: bool = True) -> bool:
         else:
             flipped = img.transpose(Image.FLIP_TOP_BOTTOM)
 
-        # Preserve format and EXIF if possible
+        # Preserve format and EXIF if possible, but reset orientation tag
         fmt = img.format or 'PNG'
-        exif = img.info.get('exif')
+        exif_bytes = img.info.get('exif')
 
         save_kwargs = {}
-        if exif and fmt.upper() in ('JPEG', 'JPG', 'WEBP', 'TIFF'):
-            save_kwargs['exif'] = exif
+        if exif_bytes and fmt.upper() in ('JPEG', 'JPG', 'WEBP', 'TIFF'):
+            try:
+                import piexif
+                exif_dict = piexif.load(exif_bytes)
+                if piexif.ImageIFD.Orientation in exif_dict.get("0th", {}):
+                    exif_dict["0th"][piexif.ImageIFD.Orientation] = 1
+                save_kwargs['exif'] = piexif.dump(exif_dict)
+            except Exception:
+                pass
         if fmt.upper() in ('JPEG', 'JPG'):
             save_kwargs['quality'] = 95
             save_kwargs['optimize'] = True

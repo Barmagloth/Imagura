@@ -434,8 +434,12 @@ class Renderer:
     def _get_thumb_widths(self, state: "AppState", idx1: int, idx2: int,
                          visible_range: int, base_thumb_h: int) -> tuple:
         """Get widths of two thumbnails."""
+        n = len(state.current_dir_images)
         widths = []
         for idx in [idx1, idx2]:
+            if idx < 0 or idx >= n:
+                widths.append(int(base_thumb_h * 1.4))
+                continue
             p = state.current_dir_images[idx]
             bt = state.thumb_cache.get(p)
             distance = abs(idx - state.gallery_center_index)

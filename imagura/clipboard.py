@@ -29,7 +29,7 @@ def copy_image_to_clipboard(image_path: str) -> bool:
         if img.mode in ('RGBA', 'LA', 'P'):
             # Create white background for transparency
             background = Image.new('RGB', img.size, (255, 255, 255))
-            if img.mode == 'P':
+            if img.mode in ('P', 'LA'):
                 img = img.convert('RGBA')
             background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
             img = background
@@ -121,8 +121,10 @@ def _copy_to_clipboard_windows_alternative(img: Image.Image) -> bool:
             ctypes.memmove(p_mem, dib_data, len(dib_data))
             kernel32.GlobalUnlock(h_mem)
 
-            # Set clipboard data
-            user32.SetClipboardData(CF_DIB, h_mem)
+            # Set clipboard data (on success, system owns h_mem; on failure, we must free it)
+            if not user32.SetClipboardData(CF_DIB, h_mem):
+                kernel32.GlobalFree(h_mem)
+                return False
 
         finally:
             user32.CloseClipboard()

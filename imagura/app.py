@@ -138,8 +138,9 @@ class Application:
             return
 
         if isinstance(cmd, NavigateToIndex):
-            if cmd.can_execute(self.state) and self.on_switch_to:
-                self.on_switch_to(cmd.target_index, cmd.animate, cmd.duration_ms)
+            if cmd.can_execute(self.state):
+                if self.on_switch_to:
+                    self.on_switch_to(cmd.target_index, cmd.animate, cmd.duration_ms)
                 cmd.execute(self.state)
             return
 
