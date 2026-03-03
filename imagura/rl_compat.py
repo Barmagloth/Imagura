@@ -66,16 +66,6 @@ def make_vec2(x: float, y: float) -> Any:
     return _CTypesVec2(float(x), float(y))
 
 
-class _CTypesColor(ctypes.Structure):
-    """Fallback Color structure for ctypes."""
-    _fields_ = [
-        ("r", ctypes.c_ubyte),
-        ("g", ctypes.c_ubyte),
-        ("b", ctypes.c_ubyte),
-        ("a", ctypes.c_ubyte),
-    ]
-
-
 def make_color(r: int, g: int, b: int, a: int) -> Any:
     """Create a raylib Color compatible with the current binding."""
     ctor = getattr(rl, "Color", None)
@@ -84,8 +74,15 @@ def make_color(r: int, g: int, b: int, a: int) -> Any:
             return ctor(int(r), int(g), int(b), int(a))
         except Exception:
             pass
-    # Fallback: use ctypes struct to preserve actual RGBA values
-    return _CTypesColor(int(r), int(g), int(b), int(a))
+    # Fallback: try ffi.new for CFFI bindings, then (r,g,b,a) tuple
+    ffi = getattr(rl, "ffi", None)
+    if ffi:
+        try:
+            c = ffi.new("Color *", [int(r), int(g), int(b), int(a)])
+            return c[0]
+        except Exception:
+            pass
+    return [int(r), int(g), int(b), int(a)]
 
 
 def draw_text(text: str, x: int, y: int, size: int, color: Any) -> None:
