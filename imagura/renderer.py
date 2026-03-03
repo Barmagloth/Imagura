@@ -123,11 +123,14 @@ class Renderer:
         if state.open_anim_t0 == 0.0:
             return
 
-        t = (now() - state.open_anim_t0) / (ANIM_OPEN_MS / 1000.0)
+        dur = ANIM_OPEN_MS / 1000.0
+        t = 1.0 if dur <= 0.0 else (now() - state.open_anim_t0) / dur
         t = min(1.0, t)
         t_eased = self._ease_out_quad(t)
 
         # Calculate animated view
+        if ti.w == 0 or ti.h == 0:
+            return
         fit_scale = min(
             state.screenW * FIT_OPEN_SCALE / ti.w,
             state.screenH * FIT_OPEN_SCALE / ti.h
@@ -149,7 +152,8 @@ class Renderer:
 
     def _draw_switch_animation(self, state: "AppState", ti: TextureInfo) -> None:
         """Draw switch animation frame."""
-        t = (now() - state.switch_anim_t0) / (state.switch_anim_duration_ms / 1000.0)
+        dur = state.switch_anim_duration_ms / 1000.0
+        t = 1.0 if dur <= 0.0 else (now() - state.switch_anim_t0) / dur
         t = min(1.0, t)
         t_eased = self._ease_in_out_cubic(t)
 

@@ -66,6 +66,16 @@ def make_vec2(x: float, y: float) -> Any:
     return _CTypesVec2(float(x), float(y))
 
 
+class _CTypesColor(ctypes.Structure):
+    """Fallback Color structure for ctypes."""
+    _fields_ = [
+        ("r", ctypes.c_ubyte),
+        ("g", ctypes.c_ubyte),
+        ("b", ctypes.c_ubyte),
+        ("a", ctypes.c_ubyte),
+    ]
+
+
 def make_color(r: int, g: int, b: int, a: int) -> Any:
     """Create a raylib Color compatible with the current binding."""
     ctor = getattr(rl, "Color", None)
@@ -74,13 +84,8 @@ def make_color(r: int, g: int, b: int, a: int) -> Any:
             return ctor(int(r), int(g), int(b), int(a))
         except Exception:
             pass
-    # Fallback: use Fade on a base color
-    base = rl.WHITE if (int(r) + int(g) + int(b)) >= 384 else rl.BLACK
-    alpha = max(0.0, min(1.0, int(a) / 255.0))
-    try:
-        return rl.Fade(base, float(alpha))
-    except Exception:
-        return base
+    # Fallback: use ctypes struct to preserve actual RGBA values
+    return _CTypesColor(int(r), int(g), int(b), int(a))
 
 
 def draw_text(text: str, x: int, y: int, size: int, color: Any) -> None:

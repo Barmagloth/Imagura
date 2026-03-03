@@ -534,7 +534,8 @@ def update_zoom_animation(state: AppState):
     if not state.zoom_anim_active:
         return
 
-    t = (now() - state.zoom_anim_t0) / (ANIM_ZOOM_MS / 1000.0)
+    dur = ANIM_ZOOM_MS / 1000.0
+    t = 1.0 if dur <= 0.0 else (now() - state.zoom_anim_t0) / dur
     if t >= 1.0:
         state.zoom_anim_active = False
         if state.cache.curr:
@@ -646,7 +647,8 @@ def render_image(state: AppState):
         if state.open_anim_t0 == 0.0:
             return
 
-        t = (now() - state.open_anim_t0) / (ANIM_OPEN_MS / 1000.0)
+        dur = ANIM_OPEN_MS / 1000.0
+        t = 1.0 if dur <= 0.0 else (now() - state.open_anim_t0) / dur
         if t >= 1.0:
             state.open_anim_active = False
             state.view = sanitize_view(state, state.last_fit_view, ti)
@@ -673,7 +675,8 @@ def render_image(state: AppState):
         return
 
     if state.switch_anim_active and state.switch_anim_prev_tex:
-        t = (now() - state.switch_anim_t0) / (state.switch_anim_duration_ms / 1000.0)
+        dur = state.switch_anim_duration_ms / 1000.0
+        t = 1.0 if dur <= 0.0 else (now() - state.switch_anim_t0) / dur
         if t >= 1.0:
             state.switch_anim_active = False
             unload_texture_deferred(state, state.switch_anim_prev_tex)
@@ -1455,13 +1458,13 @@ SETTINGS_TABS = [
         "name": "Анимация",
         "items": [
             ("Время анимации (мс)", None, None, None, None),
-            ("Переключение (клавиши)", "ANIM_SWITCH_KEYS_MS", int, 0, 2000),
-            ("Переключение (галерея)", "ANIM_SWITCH_GALLERY_MS", int, 0, 500),
-            ("Открытие изображения", "ANIM_OPEN_MS", int, 0, 2000),
-            ("Анимация зума", "ANIM_ZOOM_MS", int, 0, 500),
-            ("Переключение зума", "ANIM_TOGGLE_ZOOM_MS", int, 0, 500),
-            ("Слайд галереи", "GALLERY_SLIDE_MS", int, 0, 500),
-            ("Слайд тулбара", "TOOLBAR_SLIDE_MS", int, 0, 500),
+            ("Переключение (клавиши)", "ANIM_SWITCH_KEYS_MS", int, 1, 2000),
+            ("Переключение (галерея)", "ANIM_SWITCH_GALLERY_MS", int, 1, 500),
+            ("Открытие изображения", "ANIM_OPEN_MS", int, 1, 2000),
+            ("Анимация зума", "ANIM_ZOOM_MS", int, 1, 500),
+            ("Переключение зума", "ANIM_TOGGLE_ZOOM_MS", int, 1, 500),
+            ("Слайд галереи", "GALLERY_SLIDE_MS", int, 1, 500),
+            ("Слайд тулбара", "TOOLBAR_SLIDE_MS", int, 1, 500),
         ]
     },
     {
@@ -2897,7 +2900,8 @@ def update_toggle_zoom_animation(state: AppState):
         state.toggle_zoom_active = False
         return
 
-    t = (now() - state.toggle_zoom_t0) / (ANIM_TOGGLE_ZOOM_MS / 1000.0)
+    dur = ANIM_TOGGLE_ZOOM_MS / 1000.0
+    t = 1.0 if dur <= 0.0 else (now() - state.toggle_zoom_t0) / dur
 
     if t >= 1.0:
         # Animation finished
@@ -3171,7 +3175,14 @@ def main():
             if not input_consumed and check_close_button_click(state):
                 break
 
-            state.idle_detector.mark_activity()
+            # Only mark activity on actual user input (mouse move, key/button press, wheel)
+            _mouse_delta = rl.GetMouseDelta()
+            if (_mouse_delta.x != 0 or _mouse_delta.y != 0
+                    or rl.GetMouseWheelMove() != 0
+                    or rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)
+                    or rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)
+                    or rl.GetKeyPressed() != 0):
+                state.idle_detector.mark_activity()
 
             # Block all keyboard input when settings menu is open
             if not settings_active:
