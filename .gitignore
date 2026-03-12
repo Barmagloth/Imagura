@@ -7,4 +7,5 @@
 !/LICENSE
 !/tests/
 !/.github/
+!/benchmarks/
 __pycache__/
