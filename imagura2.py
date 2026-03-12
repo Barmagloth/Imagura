@@ -1449,6 +1449,8 @@ SETTINGS_TABS = [
             ("Макс. зум", "MAX_ZOOM", float, 5.0, 50.0),
             ("Шаг зума (клавиши)", "ZOOM_STEP_KEYS", float, 0.01, 0.2),
             ("Шаг зума (колесо)", "ZOOM_STEP_WHEEL", float, 0.01, 0.5),
+            ("Удаление", None, None, None, None),
+            ("Спрашивать при удалении", "CONFIRM_DELETE", int, 0, 1),
         ]
     },
     {
@@ -1542,37 +1544,19 @@ def get_settings_item_index(item_idx: int) -> int:
 
 
 def save_config_value(config_key: str, value, val_type: type) -> bool:
-    """Save a single config value to config.py file."""
+    """Save a single config value to user config file and update runtime."""
     import imagura.config as cfg
-    config_path = os.path.join(os.path.dirname(__file__), "imagura", "config.py")
+    from imagura.user_config import save_value
 
     try:
-        # Read current file
-        with open(config_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # Find and replace the value
-        import re
-        if val_type == float:
-            pattern = rf'^({config_key}\s*=\s*)[\d.]+(.*)$'
-            replacement = rf'\g<1>{value}\2'
-        else:
-            pattern = rf'^({config_key}\s*=\s*)\d+(.*)$'
-            replacement = rf'\g<1>{int(value)}\2'
-
-        new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
-
-        if count == 0:
-            log(f"[SETTINGS][ERR] Could not find {config_key} in config.py")
+        # Save to user config TOML file
+        typed_value = val_type(value)
+        if not save_value(config_key, typed_value, val_type):
             return False
 
-        # Write back
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(new_content)
-
         # Update runtime value
-        setattr(cfg, config_key, val_type(value))
-        log(f"[SETTINGS] Saved {config_key} = {value}")
+        setattr(cfg, config_key, typed_value)
+        log(f"[SETTINGS] Saved {config_key} = {typed_value}")
         return True
 
     except Exception as e:
@@ -1602,6 +1586,37 @@ def validate_settings_value(value_str: str, val_type: type, min_val, max_val) ->
 
     except ValueError:
         return False, None, "Invalid number"
+
+
+def handle_delete_confirm_input(state: AppState) -> bool:
+    """
+    Handle input for delete confirmation dialog.
+    Returns True if dialog is active and consumed input, False otherwise.
+    """
+    if not state.ui.delete_confirm_visible:
+        return False
+
+    if rl.IsKeyPressed(rl.KEY_RETURN) or rl.IsKeyPressed(rl.KEY_ENTER):
+        # Confirm delete
+        path = state.ui.delete_confirm_path
+        state.ui.delete_confirm_visible = False
+        state.ui.delete_confirm_path = ""
+
+        # Now actually delete the image
+        if delete_current_image(state):
+            if len(state.current_dir_images) == 0:
+                # No more images - will exit in main loop
+                pass
+        return True
+
+    if rl.IsKeyPressed(KEY_CLOSE):
+        # Cancel delete
+        state.ui.delete_confirm_visible = False
+        state.ui.delete_confirm_path = ""
+        return True
+
+    # Dialog consumed input, block other handlers
+    return True
 
 
 def get_settings_color_scheme(state: AppState) -> dict:
@@ -1869,6 +1884,45 @@ def _start_editing_field(state: AppState, tab_idx: int, field_idx: int) -> None:
                 settings.edit_state.set_text(str(current_val))
                 return
             editable_idx += 1
+
+
+def draw_delete_confirm_dialog(state: AppState):
+    """Draw delete confirmation dialog overlay."""
+    if not state.ui.delete_confirm_visible:
+        return
+
+    colors = get_settings_color_scheme(state)
+
+    # Overlay dimensions
+    dialog_w = 400
+    dialog_h = 160
+    dialog_x = (state.screenW - dialog_w) // 2
+    dialog_y = (state.screenH - dialog_h) // 2
+
+    # Semi-transparent dark overlay
+    rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(*colors["overlay"]))
+
+    # Dialog background
+    rl.DrawRectangle(dialog_x, dialog_y, dialog_w, dialog_h, RL_Color(*colors["window_bg"]))
+
+    # Border
+    rl.DrawRectangleLines(dialog_x, dialog_y, dialog_w, dialog_h, RL_Color(*colors["window_border"]))
+
+    # Title text
+    title = "Удалить в корзину?"
+    title_size = 20
+    _draw_settings_text(state, title, dialog_x + 20, dialog_y + 15, title_size, colors["title_color"])
+
+    # Filename - use basename only
+    import os
+    filename = os.path.basename(state.ui.delete_confirm_path)
+    filename_size = 16
+    _draw_settings_text(state, filename, dialog_x + 20, dialog_y + 45, filename_size, colors["text_color"])
+
+    # Hints at bottom
+    hints = "Enter — удалить  |  Esc — отмена"
+    hint_size = 14
+    _draw_settings_text(state, hints, dialog_x + 20, dialog_y + 125, hint_size, colors["hint_color"])
 
 
 def draw_settings_window(state: AppState):
@@ -2951,6 +3005,13 @@ def detect_double_click(state: AppState, x: int, y: int) -> bool:
 def main():
     log("[MAIN] Starting application")
 
+    # Apply user config overrides before anything else
+    try:
+        from imagura.user_config import apply_user_config
+        apply_user_config()
+    except Exception as e:
+        log(f"[CONFIG][ERR] Failed to apply user config: {e!r}")
+
     start_path = None
     for a in sys.argv[1:]:
         p = os.path.abspath(a)
@@ -3092,6 +3153,11 @@ def main():
             if settings_active:
                 handle_settings_input(state)
 
+            # Handle delete confirmation input (blocks other input when visible)
+            delete_confirm_active = state.ui.delete_confirm_visible
+            if delete_confirm_active:
+                handle_delete_confirm_input(state)
+
             rl.BeginDrawing()
             apply_bg_mode(state)
 
@@ -3185,15 +3251,22 @@ def main():
                     state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
                     state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
 
-            # DEL key - delete image to recycle bin (NEVER when settings active)
-            if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active and not settings_active:
-                if delete_current_image(state):
-                    if len(state.current_dir_images) == 0:
-                        # No more images - close app
-                        break
-                    rl.EndDrawing()
-                    increment_frame()
-                    continue
+            # DEL key - delete image to recycle bin (NEVER when settings/delete dialog active)
+            if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active and not settings_active and not delete_confirm_active:
+                if cfg.CONFIRM_DELETE == 1:
+                    # Show confirmation dialog
+                    if state.index < len(state.current_dir_images):
+                        state.ui.delete_confirm_visible = True
+                        state.ui.delete_confirm_path = state.current_dir_images[state.index]
+                else:
+                    # Delete immediately
+                    if delete_current_image(state):
+                        if len(state.current_dir_images) == 0:
+                            # No more images - close app
+                            break
+                        rl.EndDrawing()
+                        increment_frame()
+                        continue
 
             if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
                 if rl.IsKeyDown(KEY_ZOOM_IN) or rl.IsKeyDown(KEY_ZOOM_IN_ALT):
@@ -3450,16 +3523,17 @@ def main():
                             pass
                     RL_DrawText(line, 12, y_pos, hud_font_size, hud_color)
 
-            # Draw toolbar, context menu and settings (on top of everything)
+            # Draw toolbar, context menu, settings and delete dialog (on top of everything)
             draw_toolbar(state)
             draw_context_menu(state)
             draw_settings_window(state)
+            draw_delete_confirm_dialog(state)
 
             rl.EndDrawing()
             increment_frame()
 
-            # Skip other key handling when settings is open
-            if state.ui.settings.visible:
+            # Skip other key handling when settings or delete dialog is open
+            if state.ui.settings.visible or state.ui.delete_confirm_visible:
                 continue
 
             if rl.IsKeyPressed(KEY_CLOSE):

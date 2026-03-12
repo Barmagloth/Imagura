@@ -4,7 +4,8 @@ from __future__ import annotations
 
 # Performance
 TARGET_FPS = 120
-ASYNC_WORKERS = 10
+import os as _os
+ASYNC_WORKERS = min(4, _os.cpu_count() or 4)  # Adaptive: capped at 4 to avoid IO contention
 
 # Animation durations (milliseconds)
 ANIM_SWITCH_KEYS_MS = 250
@@ -88,6 +89,9 @@ KEY_NEXT_IMAGE_ALT = 68     # KEY_D
 KEY_PREV_IMAGE = 263        # KEY_LEFT
 KEY_PREV_IMAGE_ALT = 65     # KEY_A
 KEY_CLOSE = 256             # KEY_ESCAPE
+
+# Delete confirmation
+CONFIRM_DELETE = 1  # 1 = ask before deleting, 0 = delete without confirmation
 
 # Top toolbar
 TOOLBAR_TRIGGER_FRAC = 0.05  # Top 5% triggers toolbar

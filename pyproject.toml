@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "imagura"
+version = "2.0.0"
+description = "Fast async image viewer built on raylib"
+readme = "readme.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Imagura Contributors"},
+]
+keywords = ["image", "viewer", "raylib", "async"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "raylib>=5.0.0",
+]
+
+[project.optional-dependencies]
+exif = ["Pillow>=10.0"]
+
+[project.scripts]
+imagura = "imagura2:main"
+
+[tool.setuptools]
+packages = ["imagura", "imagura.state"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N"]
+ignore = ["E501"]  # line-length already handled by line-length config
+
+[tool.ruff.lint.isort]
+known-first-party = ["imagura"]

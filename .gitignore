@@ -2,4 +2,9 @@
 !.gitignore
 !/imagura2.py
 !/imagura/
+!/pyproject.toml
+!/readme.md
+!/LICENSE
+!/tests/
+!/.github/
 __pycache__/

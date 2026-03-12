@@ -285,6 +285,10 @@ class UIState:
     context_menu: ContextMenuState = field(default_factory=ContextMenuState)
     settings: SettingsState = field(default_factory=SettingsState)
 
+    # Delete confirmation dialog
+    delete_confirm_visible: bool = False
+    delete_confirm_path: str = ""
+
     @property
     def current_bg_mode(self) -> dict:
         """Get current background mode settings."""
