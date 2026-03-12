@@ -8,4 +8,6 @@
 !/tests/
 !/.github/
 !/benchmarks/
+!/installer/
+!/build.py
 __pycache__/
