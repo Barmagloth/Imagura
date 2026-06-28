@@ -221,35 +221,48 @@ def sanitize_view(
         Sanitized ViewParams.
     """
     v = view.copy()
-    centered = center_view_for(v.scale, img_w, img_h, screen_w, screen_h)
 
-    # Fix near-zero offsets
-    if abs(v.offx) < 5.0 and abs(v.offy) < 5.0:
-        if verbose:
-            log(f"[SANITIZE] Near-zero offsets ({v.offx:.1f},{v.offy:.1f}) "
-                f"at scale={v.scale:.3f} -> centering to "
-                f"({centered.offx:.1f},{centered.offy:.1f})")
-        return centered
+    # When the image is larger than the screen on either axis it is freely
+    # pannable, so an edge-aligned offset (e.g. offx ~= 0 with the left edge at
+    # the screen edge) is a LEGITIMATE pan position, not corruption. Re-centering
+    # such a view would silently discard the user's pan when they navigate away
+    # and back. For pannable views, only clamp to valid bounds. The centering
+    # heuristics below only make sense for images that fit within the screen,
+    # where centered is the natural resting state.
+    vw = img_w * v.scale
+    vh = img_h * v.scale
+    pannable = vw > screen_w + 1.0 or vh > screen_h + 1.0
 
-    # Fix asymmetric offsets (one near zero, one large)
-    if (abs(v.offx) < 5.0 and abs(v.offy) > 50.0) or \
-       (abs(v.offy) < 5.0 and abs(v.offx) > 50.0):
-        if verbose:
-            log(f"[SANITIZE] Asymmetric offsets ({v.offx:.1f},{v.offy:.1f}) "
-                f"at scale={v.scale:.3f} -> centering to "
-                f"({centered.offx:.1f},{centered.offy:.1f})")
-        return centered
+    if not pannable:
+        centered = center_view_for(v.scale, img_w, img_h, screen_w, screen_h)
 
-    # Fix 1:1 views with bad offsets
-    if abs(v.scale - 1.0) < 0.01:
-        centered_1to1 = view_for_1to1_centered(img_w, img_h, screen_w, screen_h)
-        if abs(v.offx - centered_1to1.offx) > 50 or \
-           abs(v.offy - centered_1to1.offy) > 50:
+        # Fix near-zero offsets
+        if abs(v.offx) < 5.0 and abs(v.offy) < 5.0:
             if verbose:
-                log(f"[SANITIZE] 1:1 with bad offsets ({v.offx:.1f},{v.offy:.1f}) "
-                    f"vs centered ({centered_1to1.offx:.1f},{centered_1to1.offy:.1f}) "
-                    f"-> fixing")
-            return centered_1to1
+                log(f"[SANITIZE] Near-zero offsets ({v.offx:.1f},{v.offy:.1f}) "
+                    f"at scale={v.scale:.3f} -> centering to "
+                    f"({centered.offx:.1f},{centered.offy:.1f})")
+            return centered
 
-    # Apply pan clamping
+        # Fix asymmetric offsets (one near zero, one large)
+        if (abs(v.offx) < 5.0 and abs(v.offy) > 50.0) or \
+           (abs(v.offy) < 5.0 and abs(v.offx) > 50.0):
+            if verbose:
+                log(f"[SANITIZE] Asymmetric offsets ({v.offx:.1f},{v.offy:.1f}) "
+                    f"at scale={v.scale:.3f} -> centering to "
+                    f"({centered.offx:.1f},{centered.offy:.1f})")
+            return centered
+
+        # Fix 1:1 views with bad offsets
+        if abs(v.scale - 1.0) < 0.01:
+            centered_1to1 = view_for_1to1_centered(img_w, img_h, screen_w, screen_h)
+            if abs(v.offx - centered_1to1.offx) > 50 or \
+               abs(v.offy - centered_1to1.offy) > 50:
+                if verbose:
+                    log(f"[SANITIZE] 1:1 with bad offsets ({v.offx:.1f},{v.offy:.1f}) "
+                        f"vs centered ({centered_1to1.offx:.1f},{centered_1to1.offy:.1f}) "
+                        f"-> fixing")
+                return centered_1to1
+
+    # Apply pan clamping (keeps any legitimate view within valid bounds)
     return clamp_pan(v, img_w, img_h, screen_w, screen_h)

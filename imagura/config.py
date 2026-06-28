@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+# Application metadata (shown in the About tab). Keep APP_VERSION in sync with
+# pyproject.toml.
+APP_NAME = "Imagura"
+APP_VERSION = "2.1.0"
+APP_AUTHOR = "Barmagloth"
+APP_LICENSE = "MIT"
+APP_YEAR = "2026"
+
+# Interface language ("ru" or "en"). Overridden at startup from user settings.
+LANGUAGE = "ru"
+
 # Performance
 TARGET_FPS = 120
 ASYNC_WORKERS = 10
 
 # Animation durations (milliseconds)
 ANIM_SWITCH_KEYS_MS = 250
-ANIM_SWITCH_GALLERY_MS = 10
+RAPID_NAV_SKIP_THRESHOLD = 4  # Skip animations when queue exceeds this
+ANIM_SWITCH_GALLERY_MS = 150
 ANIM_TOGGLE_ZOOM_MS = 150
 ANIM_OPEN_MS = 300
 ANIM_ZOOM_MS = 150
@@ -42,6 +54,14 @@ MAX_IMAGE_DIMENSION = 8192
 MAX_FILE_SIZE_MB = 200
 HEAVY_FILE_SIZE_MB = 10
 HEAVY_MIN_SHORT_SIDE = 4000
+MAX_ANIM_FRAMES = 600
+MAX_ANIM_MEMORY_MB = 256
+ANIMATED_CONTENT_CACHE_MAX_MB = 256
+ANIMATED_CONTENT_CACHE_MAX_ITEMS = 4
+FULL_IMAGE_CACHE_MAX_MB = 256
+FULL_IMAGE_CACHE_MAX_ITEMS = 4
+DEFAULT_GALLERY_SORT_KEY = "name"
+DEFAULT_GALLERY_SORT_DESC = False
 
 # Gallery
 GALLERY_HEIGHT_FRAC = 0.12
@@ -68,8 +88,9 @@ KEY_REPEAT_INTERVAL = 0.08  # Seconds between repeats
 # Font is loaded at this base size - using larger size for better quality when scaling down
 FONT_SIZE = 32
 # Display size for filename overlay (can be different from load size)
-FONT_DISPLAY_SIZE = 27
+FONT_DISPLAY_SIZE = 28
 FONT_ANTIALIAS = True
+SHOW_SCALE_OVERLAY = True
 
 # Hotkeys (raylib key codes)
 # See: https://github.com/raysan5/raylib/blob/master/src/raylib.h
@@ -113,77 +134,82 @@ BG_MODES = [
     {"color": (255, 255, 255), "opacity": 0.5, "blur": True},
 ]
 
+# Background blur (DWM acrylic). On by default for the frosted look; turn it off
+# for smooth window move/resize (acrylic makes the DWM recomposite every step,
+# which freezes resizing on Windows).
+BLUR_ENABLED = True
+
 # Settings modal window color schemes (NOT app background!)
 SETTINGS_MODAL_COLORS_TRANSPARENT = {
-    "window_bg": (180, 177, 173, 255),
-    "window_border": (140, 135, 125, 255),
-    "title_color": (50, 45, 40, 255),
-    "text_color": (40, 35, 30, 255),
-    "text_secondary": (80, 75, 70, 255),
-    "header_text": (60, 55, 50, 255),
+    "window_bg": (232, 229, 225, 255),
+    "window_border": (160, 155, 145, 255),
+    "title_color": (40, 35, 30, 255),
+    "text_color": (35, 30, 25, 255),
+    "text_secondary": (70, 65, 60, 255),
+    "header_text": (50, 45, 40, 255),
     "input_bg": (245, 242, 238, 255),
     "input_border": (160, 155, 145, 255),
     "input_text": (30, 25, 20, 255),
     "input_active_border": (80, 120, 160, 255),
     "input_active_bg": (250, 248, 245, 255),
-    "value_color": (50, 100, 140, 255),
-    "hover_bg": (210, 205, 198, 255),
+    "value_color": (40, 90, 130, 255),
+    "hover_bg": (225, 220, 215, 255),
     "selection_bg": (160, 180, 200, 200),
     "tab_active": (245, 242, 238, 255),
-    "tab_text": (60, 55, 50, 255),
-    "tab_text_active": (30, 25, 20, 255),
-    "hint_color": (110, 105, 100, 255),
+    "tab_text": (55, 50, 45, 255),
+    "tab_text_active": (25, 20, 15, 255),
+    "hint_color": (80, 75, 70, 255),
     "close_btn": (140, 90, 90, 255),
     "close_btn_hover": (180, 60, 60, 255),
-    "overlay": (80, 75, 70, 120),
+    "overlay": (12, 11, 9, 120),
 }
 
 SETTINGS_MODAL_COLORS_LIGHT = {
-    "window_bg": (185, 185, 185, 255),
-    "window_border": (150, 150, 150, 255),
-    "title_color": (30, 30, 30, 255),
-    "text_color": (40, 40, 40, 255),
-    "text_secondary": (90, 90, 90, 255),
-    "header_text": (70, 70, 70, 255),
+    "window_bg": (235, 235, 235, 255),
+    "window_border": (165, 165, 165, 255),
+    "title_color": (25, 25, 25, 255),
+    "text_color": (35, 35, 35, 255),
+    "text_secondary": (80, 80, 80, 255),
+    "header_text": (55, 55, 55, 255),
     "input_bg": (250, 250, 250, 255),
     "input_border": (170, 170, 170, 255),
     "input_text": (20, 20, 20, 255),
     "input_active_border": (60, 120, 180, 255),
     "input_active_bg": (255, 255, 255, 255),
-    "value_color": (40, 100, 160, 255),
-    "hover_bg": (220, 225, 230, 255),
+    "value_color": (35, 90, 150, 255),
+    "hover_bg": (230, 232, 235, 255),
     "selection_bg": (160, 190, 220, 200),
     "tab_active": (250, 250, 250, 255),
-    "tab_text": (70, 70, 70, 255),
-    "tab_text_active": (20, 20, 20, 255),
-    "hint_color": (120, 120, 120, 255),
+    "tab_text": (60, 60, 60, 255),
+    "tab_text_active": (15, 15, 15, 255),
+    "hint_color": (75, 75, 75, 255),
     "close_btn": (150, 70, 70, 255),
     "close_btn_hover": (200, 50, 50, 255),
-    "overlay": (0, 0, 0, 100),
+    "overlay": (0, 0, 0, 120),
 }
 
 SETTINGS_MODAL_COLORS_DARK = {
-    "window_bg": (45, 47, 52, 255),
-    "window_border": (80, 85, 95, 255),
-    "title_color": (230, 230, 235, 255),
-    "text_color": (210, 210, 215, 255),
-    "text_secondary": (150, 150, 160, 255),
-    "header_text": (170, 170, 180, 255),
-    "input_bg": (55, 58, 65, 255),
-    "input_border": (90, 95, 105, 255),
-    "input_text": (230, 230, 235, 255),
+    "window_bg": (50, 52, 58, 255),
+    "window_border": (85, 90, 100, 255),
+    "title_color": (235, 235, 240, 255),
+    "text_color": (215, 215, 220, 255),
+    "text_secondary": (155, 155, 165, 255),
+    "header_text": (175, 175, 185, 255),
+    "input_bg": (60, 63, 70, 255),
+    "input_border": (95, 100, 110, 255),
+    "input_text": (235, 235, 240, 255),
     "input_active_border": (90, 150, 210, 255),
-    "input_active_bg": (60, 65, 75, 255),
-    "value_color": (110, 170, 230, 255),
-    "hover_bg": (60, 65, 75, 255),
+    "input_active_bg": (65, 70, 80, 255),
+    "value_color": (115, 175, 235, 255),
+    "hover_bg": (65, 70, 80, 255),
     "selection_bg": (70, 110, 160, 200),
-    "tab_active": (60, 65, 75, 255),
-    "tab_text": (150, 150, 160, 255),
-    "tab_text_active": (230, 230, 235, 255),
-    "hint_color": (110, 110, 120, 255),
+    "tab_active": (65, 70, 80, 255),
+    "tab_text": (155, 155, 165, 255),
+    "tab_text_active": (235, 235, 240, 255),
+    "hint_color": (140, 140, 150, 255),
     "close_btn": (170, 90, 90, 255),
     "close_btn_hover": (210, 70, 70, 255),
-    "overlay": (0, 0, 0, 150),
+    "overlay": (0, 0, 0, 120),
 }
 
 # Settings modal window dimensions and layout
@@ -216,5 +242,11 @@ MIN_WINDOW_HEIGHT = 300
 NAV_EDGE_MIN_PX = 60  # Minimum navigation zone width in pixels
 GALLERY_MIN_HEIGHT_PX = 80  # Minimum gallery height in pixels
 
-# Supported image extensions
+# Supported image extensions (kept for backward compatibility)
 IMG_EXTS = frozenset({".png", ".jpg", ".jpeg", ".bmp", ".tga", ".gif", ".qoi"})
+
+
+def get_supported_extensions() -> frozenset:
+    """Return all extensions supported by registered viewers."""
+    from .viewers import get_registry
+    return get_registry().supported_extensions()

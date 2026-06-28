@@ -82,6 +82,11 @@ class WinBlur:
     # Track which method succeeded
     _active_method: Optional[str] = None
 
+    # Blur style: True = acrylic (the only style that reliably blurs on Win10/11),
+    # False = basic blur-behind fallback. Whether blur is applied at all is gated
+    # by config.BLUR_ENABLED in the app layer.
+    acrylic: bool = True
+
     @staticmethod
     def _get_windows_build() -> int:
         """Get Windows build number."""
@@ -342,16 +347,26 @@ class WinBlur:
         # Extend frame into client area (required for all methods)
         cls._extend_frame_into_client(hwnd, True)
 
-        # Try Acrylic blur first (mode 4) - works on both Win10 and Win11
-        # Semi-transparent dark tint (60% opacity)
-        if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000):
-            cls._active_method = "acrylic"
-            return
-
-        # Fallback to basic blur (mode 3)
-        if cls._set_composition_attribute(hwnd, cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000):
-            cls._active_method = "blur"
-            return
+        # Acrylic (ACRYLICBLURBEHIND) looks nicer but makes transparent windows
+        # catastrophically slow to move/resize on Windows (the DWM recomposites
+        # the acrylic every step of the modal resize loop, freezing the window
+        # and cursor for seconds). Basic blur-behind is far cheaper and resizes
+        # smoothly. The style is chosen by cls.acrylic; whether blur is applied
+        # at all is gated by config.BLUR_ENABLED in the app layer.
+        if cls.acrylic:
+            order = (
+                (cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000, "acrylic"),
+                (cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000, "blur"),
+            )
+        else:
+            order = (
+                (cls.ACCENT_ENABLE_BLURBEHIND, 0x00000000, "blur"),
+                (cls.ACCENT_ENABLE_ACRYLICBLURBEHIND, 0x99000000, "acrylic"),
+            )
+        for accent, tint, name in order:
+            if cls._set_composition_attribute(hwnd, accent, tint):
+                cls._active_method = name
+                return
 
     @classmethod
     def disable(cls, hwnd: Optional[int]) -> None:
@@ -368,6 +383,29 @@ class WinBlur:
         # Reset frame extension
         cls._extend_frame_into_client(hwnd, extend=False)
         cls._active_method = None
+
+
+def set_titlebar_dark(hwnd: Optional[int], dark: bool = True) -> bool:
+    """Make the standard window title bar dark (DWM immersive dark mode).
+
+    Only visible in windowed/decorated mode; harmless in borderless fullscreen.
+    No-op on non-Windows or unsupported builds.
+    """
+    if not hwnd or sys.platform != 'win32':
+        return False
+    try:
+        dwmapi = ctypes.windll.dwmapi
+        val = ctypes.c_int(1 if dark else 0)
+        # attr 20 on Win10 1809+/Win11; attr 19 on the original 1809 build.
+        for attr in (20, 19):
+            res = dwmapi.DwmSetWindowAttribute(
+                ctypes.c_void_p(hwnd), ctypes.c_uint(attr),
+                ctypes.byref(val), ctypes.sizeof(val))
+            if res == 0:
+                return True
+        return False
+    except Exception:
+        return False
 
 
 def get_window_handle_from_raylib() -> Optional[int]:
@@ -388,7 +426,13 @@ def get_window_handle_from_raylib() -> Optional[int]:
         try:
             user32 = ctypes.windll.user32
             user32.FindWindowW.restype = ctypes.c_void_p
-            return int(user32.FindWindowW(None, "Viewer")) or None
+            title = "Imagura"
+            try:
+                from .config import APP_NAME
+                title = APP_NAME
+            except Exception:
+                pass
+            return int(user32.FindWindowW(None, title)) or None
         except Exception:
             pass
 

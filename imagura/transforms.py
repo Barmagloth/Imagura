@@ -27,15 +27,18 @@ def rotate_image_file(image_path: str, clockwise: bool = True) -> bool:
         True if successful, False otherwise.
     """
     try:
-        img = Image.open(image_path)
+        with Image.open(image_path) as img:
+            if getattr(img, "is_animated", False):
+                log(f"[TRANSFORM][SKIP] Animated files are not rotated in-place yet: {os.path.basename(image_path)}")
+                return False
 
-        # PIL uses counter-clockwise angles
-        angle = -90 if clockwise else 90
-        rotated = img.rotate(angle, expand=True)
+            # PIL uses counter-clockwise angles
+            angle = -90 if clockwise else 90
+            rotated = img.rotate(angle, expand=True)
 
-        # Preserve format and EXIF if possible, but reset orientation tag
-        fmt = img.format or 'PNG'
-        exif_bytes = img.info.get('exif')
+            # Preserve format and EXIF if possible, but reset orientation tag
+            fmt = img.format or 'PNG'
+            exif_bytes = img.info.get('exif')
 
         save_kwargs = {}
         if exif_bytes and fmt.upper() in ('JPEG', 'JPG', 'WEBP', 'TIFF'):
@@ -55,7 +58,10 @@ def rotate_image_file(image_path: str, clockwise: bool = True) -> bool:
         if fmt.upper() == 'PNG':
             save_kwargs['optimize'] = True
 
-        rotated.save(image_path, format=fmt, **save_kwargs)
+        try:
+            rotated.save(image_path, format=fmt, **save_kwargs)
+        finally:
+            rotated.close()
 
         direction = "clockwise" if clockwise else "counter-clockwise"
         log(f"[TRANSFORM] Rotated {direction}: {os.path.basename(image_path)}")
@@ -78,16 +84,19 @@ def flip_image_file(image_path: str, horizontal: bool = True) -> bool:
         True if successful, False otherwise.
     """
     try:
-        img = Image.open(image_path)
+        with Image.open(image_path) as img:
+            if getattr(img, "is_animated", False):
+                log(f"[TRANSFORM][SKIP] Animated files are not flipped in-place yet: {os.path.basename(image_path)}")
+                return False
 
-        if horizontal:
-            flipped = img.transpose(Image.FLIP_LEFT_RIGHT)
-        else:
-            flipped = img.transpose(Image.FLIP_TOP_BOTTOM)
+            if horizontal:
+                flipped = img.transpose(Image.FLIP_LEFT_RIGHT)
+            else:
+                flipped = img.transpose(Image.FLIP_TOP_BOTTOM)
 
-        # Preserve format and EXIF if possible, but reset orientation tag
-        fmt = img.format or 'PNG'
-        exif_bytes = img.info.get('exif')
+            # Preserve format and EXIF if possible, but reset orientation tag
+            fmt = img.format or 'PNG'
+            exif_bytes = img.info.get('exif')
 
         save_kwargs = {}
         if exif_bytes and fmt.upper() in ('JPEG', 'JPG', 'WEBP', 'TIFF'):
@@ -105,7 +114,10 @@ def flip_image_file(image_path: str, horizontal: bool = True) -> bool:
         if fmt.upper() == 'PNG':
             save_kwargs['optimize'] = True
 
-        flipped.save(image_path, format=fmt, **save_kwargs)
+        try:
+            flipped.save(image_path, format=fmt, **save_kwargs)
+        finally:
+            flipped.close()
 
         direction = "horizontally" if horizontal else "vertically"
         log(f"[TRANSFORM] Flipped {direction}: {os.path.basename(image_path)}")

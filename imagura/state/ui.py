@@ -22,9 +22,9 @@ class MenuItem:
     icon: Optional[str] = None  # Icon identifier
 
 
-# Default menu items
+# Default menu items. Labels are i18n keys resolved via tr() at draw time.
 DEFAULT_MENU_ITEMS: List[MenuItem] = [
-    MenuItem(MenuItemId.COPY, "Копировать"),
+    MenuItem(MenuItemId.COPY, "menu.copy"),
 ]
 
 
@@ -273,6 +273,9 @@ class UIState:
     """State for UI elements."""
     show_hud: bool = False
     show_filename: bool = False
+    scale_overlay_alpha: float = 0.0
+    scale_overlay_mode: str = ""  # "", "real", "fit", "custom"
+    scale_last_change_time: float = 0.0
     nav_left_alpha: float = 0.0
     nav_right_alpha: float = 0.0
     close_btn_alpha: float = 0.0

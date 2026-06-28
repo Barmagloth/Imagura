@@ -14,12 +14,14 @@ class LoadingState:
     async_loader: Optional[Any] = None  # AsyncImageLoader
     idle_detector: Optional[Any] = None  # IdleDetector
     loading_current: bool = False
+    transforming: bool = False
     waiting_for_switch: bool = False
     waiting_prev_snapshot: Optional[TextureInfo] = None
     waiting_prev_view: ViewParams = field(default_factory=ViewParams)
     pending_target_index: Optional[int] = None
     pending_neighbors_load: bool = False
     pending_switch_duration_ms: int = field(default=ANIM_SWITCH_KEYS_MS)
+    load_generation: int = 0
 
     @property
     def is_busy(self) -> bool:

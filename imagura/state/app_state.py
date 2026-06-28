@@ -154,6 +154,14 @@ class AppState:
     def user_zoom_memory(self, value: dict):
         self.images.user_zoom_memory = value
 
+    @property
+    def playback(self):
+        return self.images.playback
+
+    @playback.setter
+    def playback(self, value):
+        self.images.playback = value
+
     # ═══════════════════════════════════════════════════════════════════════
     # Backward-compatible properties - ViewState
     # ═══════════════════════════════════════════════════════════════════════
@@ -523,6 +531,14 @@ class AppState:
         self.loading.loading_current = value
 
     @property
+    def transforming(self) -> bool:
+        return self.loading.transforming
+
+    @transforming.setter
+    def transforming(self, value: bool):
+        self.loading.transforming = value
+
+    @property
     def waiting_for_switch(self) -> bool:
         return self.loading.waiting_for_switch
 
@@ -569,3 +585,11 @@ class AppState:
     @pending_switch_duration_ms.setter
     def pending_switch_duration_ms(self, value: int):
         self.loading.pending_switch_duration_ms = value
+
+    @property
+    def load_generation(self) -> int:
+        return self.loading.load_generation
+
+    @load_generation.setter
+    def load_generation(self, value: int):
+        self.loading.load_generation = value

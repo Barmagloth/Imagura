@@ -154,3 +154,33 @@ def is_supported_image(filepath: str) -> bool:
     """Check if file has a supported image extension."""
     ext = os.path.splitext(filepath)[1].lower()
     return ext in IMG_EXTS
+
+
+# --- Viewer-registry-aware variants ---
+
+def list_supported_files(dirpath: str) -> List[str]:
+    """List all files supported by registered viewers, sorted by name.
+
+    Uses the viewer registry so new viewer types are automatically included.
+    """
+    from .viewers import get_registry
+    exts = get_registry().supported_extensions()
+
+    try:
+        names = sorted(os.listdir(dirpath))
+    except Exception:
+        return []
+
+    result = []
+    for name in names:
+        path = os.path.join(dirpath, name)
+        ext = os.path.splitext(name)[1].lower()
+        if os.path.isfile(path) and ext in exts:
+            result.append(path)
+    return result
+
+
+def is_supported_file(filepath: str) -> bool:
+    """Check if file is supported by any registered viewer."""
+    from .viewers import get_registry
+    return get_registry().get_viewer(filepath) is not None

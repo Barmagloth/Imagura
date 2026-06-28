@@ -19,6 +19,7 @@ class ImageListState:
     to_unload: List[Any] = field(default_factory=list)  # List[rl.Texture2D]
     view_memory: dict = field(default_factory=dict)
     user_zoom_memory: dict = field(default_factory=dict)
+    playback: Any = None  # Optional[Playback] — active animated content playback
 
     @property
     def count(self) -> int:

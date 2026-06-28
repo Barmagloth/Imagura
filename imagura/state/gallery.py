@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
-from ..config import GALLERY_HEIGHT_FRAC
+from ..config import DEFAULT_GALLERY_SORT_DESC, DEFAULT_GALLERY_SORT_KEY, GALLERY_HEIGHT_FRAC
 
 
 @dataclass
@@ -15,6 +15,10 @@ class GalleryState:
     visible: bool = False
     target_index: Optional[int] = None
     last_wheel_time: float = 0.0
+    sort_key: str = DEFAULT_GALLERY_SORT_KEY
+    sort_desc: bool = DEFAULT_GALLERY_SORT_DESC
+    sort_menu_open: bool = False
+    sort_menu_hover_index: int = -1
 
     def get_height(self, screen_h: int) -> int:
         """Get gallery height in pixels."""

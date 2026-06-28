@@ -14,6 +14,7 @@ class AnimationState:
     # Open animation
     open_active: bool = False
     open_t0: float = 0.0
+    open_from_view: ViewParams = field(default_factory=ViewParams)
 
     # Switch animation
     switch_active: bool = False

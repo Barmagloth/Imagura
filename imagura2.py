@@ -3,29 +3,17 @@
 from __future__ import annotations
 import os
 import sys
-import ctypes
 import atexit
 import traceback
-from dataclasses import dataclass, field
-from collections import OrderedDict, deque
-from typing import List, Tuple, Optional, Deque, Callable, Any, Dict
-from queue import PriorityQueue, Empty
-from threading import Thread, Lock
+from typing import Tuple, Optional
+from threading import Thread
 import math
-from datetime import datetime
-
-try:
-    from PIL import Image
-    from PIL.ExifTags import TAGS
-    HAS_PIL = True
-except ImportError:
-    HAS_PIL = False
 
 # Import from new modules
 import imagura.config as cfg  # For dynamic access to config values
 from imagura.config import (
     TARGET_FPS, ASYNC_WORKERS,
-    ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS, ANIM_TOGGLE_ZOOM_MS,
+    ANIM_SWITCH_KEYS_MS, ANIM_SWITCH_GALLERY_MS, ANIM_TOGGLE_ZOOM_MS, RAPID_NAV_SKIP_THRESHOLD,
     ANIM_OPEN_MS, ANIM_ZOOM_MS,
     FIT_DEFAULT_SCALE, FIT_OPEN_SCALE, OPEN_ALPHA_START,
     ZOOM_STEP_KEYS, ZOOM_STEP_WHEEL, MAX_ZOOM,
@@ -64,110 +52,109 @@ from imagura.rl_compat import (
 )
 from imagura.win_utils import (
     WinBlur, get_work_area, get_short_path_name, get_window_handle_from_raylib,
+    set_titlebar_dark,
 )
-from imagura.image_utils import (
-    probe_image_dimensions, is_heavy_image, list_images, get_thumb_cache_path,
-)
+from imagura.image_utils import list_supported_files
+from imagura.image_sorting import resort_preserving_current, sort_image_paths
 from imagura.logging import log, now, increment_frame, get_frame
 from imagura.types import (
-    LoadPriority, LoadTask, UIEvent,
-    ViewParams, TextureInfo, ImageCache, BitmapThumb,
+    ViewParams, TextureInfo,
 )
 from imagura.view_math import (
     compute_fit_scale as compute_fit_scale_pure,
     center_view_for as center_view_for_pure,
     compute_fit_view as compute_fit_view_pure,
     clamp_pan as clamp_pan_pure,
-    recompute_view_anchor_zoom as anchor_zoom_pure,
     view_for_1to1_centered as view_1to1_pure,
     sanitize_view as sanitize_view_pure,
 )
-from imagura.animation import (
-    AnimationController, AnimationType,
-    ToggleZoomAnimation, ZoomAnimation,
-    create_toggle_zoom_animation, create_zoom_animation,
+from imagura.gallery import GalleryBehavior, GalleryRenderer
+from imagura.image_loading import CurrentAndNeighborLoader, load_content_cpu
+from imagura.playback import AnimatedContentPlayback
+from imagura.platform import delete_to_trash, open_image_file_dialog
+from imagura.services import (
+    AnimatedContentCache,
+    AsyncContentLoader,
+    IdleDetector,
+    LargeTextureCache,
+    TextureManager,
+    ThumbnailService,
 )
 from imagura.state import AppState
 from imagura.state.ui import ToolbarButtonId, MenuItemId
 from imagura.clipboard import copy_image_to_clipboard
 from imagura.transforms import rotate_image_file, flip_image_file
+from imagura.user_settings import load_user_settings, save_user_setting, user_settings_path
+from imagura.settings_persistence import (
+    SETTINGS_TABS,
+    SETTINGS_ITEMS,
+    get_settings_item_index,
+    settings_definitions,
+    validate_settings_value,
+    apply_saved_settings_impl as _apply_saved_settings_impl,
+    save_config_value_impl as _save_config_value_impl,
+)
+from imagura.ui import (
+    draw_context_menu as draw_context_menu_ui,
+    draw_filename_overlay,
+    draw_gallery_sort_control,
+    draw_hud,
+    draw_scale_overlay,
+    draw_settings_window,
+    draw_toolbar as draw_toolbar_ui,
+    get_settings_color_scheme,
+    handle_gallery_sort_input,
+    handle_context_menu_input,
+    handle_settings_input,
+    update_toolbar_alpha as update_toolbar_alpha_ui,
+    update_toolbar_input,
+)
+from imagura.zoom import (
+    ScaleOverlayController,
+    ToggleZoomAnimationController,
+    ZoomAnimationController,
+    apply_manual_zoom,
+)
 
 # Aliases for compatibility
 RL_VER = RL_VERSION
 _RL_WHITE = RL_WHITE
+_TEXTURE_MANAGER = TextureManager()
+_THUMBNAIL_SERVICE = ThumbnailService(_TEXTURE_MANAGER)
+_LARGE_TEXTURE_CACHE = LargeTextureCache()
+_ANIMATED_CONTENT_CACHE = AnimatedContentCache()
+_GALLERY_BEHAVIOR = GalleryBehavior()
+_GALLERY_RENDERER = GalleryRenderer()
+_ANIMATED_PLAYBACK = AnimatedContentPlayback()
+_SCALE_OVERLAY = ScaleOverlayController(now)
+_ZOOM_ANIMATION = ZoomAnimationController(now)
+_TOGGLE_ZOOM_ANIMATION = ToggleZoomAnimationController(now)
 
 
-class AsyncImageLoader:
-    def __init__(self, loader_func: Callable):
-        self.task_queue = PriorityQueue()
-        self.loader_func = loader_func
-        self.running = True
-        self.ui_events = deque()
-        self.ui_lock = Lock()
-        self.workers = []
-
-        for _ in range(ASYNC_WORKERS):
-            worker = Thread(target=self._worker_loop, daemon=True)
-            worker.start()
-            self.workers.append(worker)
-
-    def _worker_loop(self):
-        while self.running:
-            try:
-                task = self.task_queue.get(timeout=0.1)
-            except Empty:
-                continue
-
-            result = None
-            error = None
-
-            try:
-                result = self.loader_func(task.path)
-            except Exception as e:
-                error = e
-
-            self._push_ui_event(task.callback, (task.path, result, error))
-            self.task_queue.task_done()
-
-    def _push_ui_event(self, callback: Callable, args: tuple):
-        with self.ui_lock:
-            self.ui_events.append(UIEvent(callback, args))
-
-    def poll_ui_events(self, max_events: int = 100):
-        events_to_process = []
-        with self.ui_lock:
-            count = 0
-            while self.ui_events and count < max_events:
-                event = self.ui_events.popleft()
-                events_to_process.append(event)
-                count += 1
-
-        for event in events_to_process:
-            try:
-                event.callback(*event.args)
-            except Exception as e:
-                log(f"[UI_EVENT][ERR] {e!r}")
-
-    def submit(self, path: str, priority: LoadPriority, callback: Callable):
-        task = LoadTask(path, priority, callback, now())
-        self.task_queue.put(task)
-
-    def shutdown(self):
-        self.running = False
-        for worker in self.workers:
-            worker.join(timeout=1.0)
+def _make_error_texture(path: str) -> TextureInfo:
+    ph = rl.GenImageColor(2, 2, _RL_WHITE)
+    tex = rl.LoadTextureFromImage(ph)
+    rl.UnloadImage(ph)
+    return TextureInfo(tex=tex, w=2, h=2, path=path)
 
 
-class IdleDetector:
-    def __init__(self, threshold: float = IDLE_THRESHOLD_SECONDS):
-        self.threshold = threshold
-        self.last_activity = now()
+_CURRENT_AND_NEIGHBOR_LOADER = CurrentAndNeighborLoader(
+    _TEXTURE_MANAGER,
+    _THUMBNAIL_SERVICE,
+    _ANIMATED_PLAYBACK,
+    _make_error_texture,
+    now,
+    _LARGE_TEXTURE_CACHE,
+    _ANIMATED_CONTENT_CACHE,
+)
 
-    def mark_activity(self):
-        self.last_activity = now()
 
-    def is_idle(self) -> bool:
-        return (now() - self.last_activity) >= self.threshold
+def _fullscreen_window_flags() -> int:
+    return (
+        rl.FLAG_WINDOW_UNDECORATED
+        | getattr(rl, "FLAG_WINDOW_ALWAYS_RUN", 0)
+        | getattr(rl, "FLAG_WINDOW_TRANSPARENT", 0)
+    )
 
 
 
@@ -227,6 +214,22 @@ def load_unicode_font(font_size: int = None):
 
 
 
+def _set_window_icon() -> None:
+    """Set the GLFW/raylib window icon (shown in the windowed title bar and taskbar)."""
+    try:
+        from imagura.app_icon import ICON_PNG_BYTES
+        from imagura.viewers.base import load_image_from_memory
+
+        img = load_image_from_memory(".png", ICON_PNG_BYTES)
+        rl.SetWindowIcon(img)
+        try:
+            rl.UnloadImage(img)
+        except Exception:
+            pass
+    except Exception as exc:
+        log(f"[INIT][WARN] SetWindowIcon failed: {exc!r}")
+
+
 def init_window_and_blur(state: AppState):
     log("[INIT] Starting window initialization")
     x, y, w, h = get_work_area()
@@ -236,18 +239,24 @@ def init_window_and_blur(state: AppState):
         x, y = 0, 0
 
     log(f"[INIT] Creating window: {w}x{h} at ({x}, {y})")
+    flags = _fullscreen_window_flags()
     try:
-        rl.InitWindow(w, h, "Viewer")
+        rl.SetConfigFlags(flags)
+    except Exception as exc:
+        log(f"[INIT][WARN] SetConfigFlags failed: {exc!r}")
+
+    try:
+        rl.InitWindow(w, h, "Imagura")
     except TypeError:
-        rl.InitWindow(w, h, b"Viewer")
+        rl.InitWindow(w, h, b"Imagura")
 
     log("[INIT] Window created")
+    _set_window_icon()
 
     try:
         rl.SetExitKey(0)
     except Exception:
         pass
-    flags = rl.FLAG_WINDOW_UNDECORATED | getattr(rl, 'FLAG_WINDOW_ALWAYS_RUN', 0)
     rl.SetWindowState(flags)
     try:
         rl.SetWindowPosition(x, y)
@@ -256,11 +265,20 @@ def init_window_and_blur(state: AppState):
     rl.SetTargetFPS(TARGET_FPS)
     state.screenW, state.screenH = rl.GetScreenWidth(), rl.GetScreenHeight()
     state.hwnd = get_window_handle_from_raylib()
+    set_titlebar_dark(state.hwnd)
     state.gallery_y = state.screenH
     state.unicode_font = None
-    state.async_loader = AsyncImageLoader(load_image_cpu_only)
+    state.async_loader = AsyncContentLoader(load_content_cpu)
     state.idle_detector = IdleDetector()
     log(f"[INIT] RL_VER={RL_VER} workarea={w}x{h} window={state.screenW}x{state.screenH} hwnd={state.hwnd}")
+
+
+# After a window-mode toggle the OS rebuilds the frame (border + DWM) over
+# several frames, transiently shifting the client area. We suppress image
+# drawing until the framebuffer size matches the target again (capped), so the
+# transitional title-bar-height jump is never shown — the blurred background
+# fills the screen meanwhile.
+_post_toggle_settle = {"active": False, "w": 0, "h": 0, "n": 0}
 
 
 def toggle_window_mode(state: AppState):
@@ -271,9 +289,12 @@ def toggle_window_mode(state: AppState):
     - If image >= screen size, window is maximized
     - Window has standard decorations (title bar, buttons)
     """
+    ti = state.cache.curr
+    WINDOWED_MIN = 300   # minimum windowed-mode window size (px)
+    TITLE_BAR_H = 32     # title bar sits above the client area on screen
+
     if not state.windowed_mode:
-        # Switch to windowed mode
-        # Save current fullscreen dimensions and position
+        # ── Fullscreen → windowed ───────────────────────────────────────────
         work_x, work_y, work_w, work_h = get_work_area()
         if work_w == 0 or work_h == 0:
             work_w, work_h = state.screenW, state.screenH
@@ -284,71 +305,57 @@ def toggle_window_mode(state: AppState):
         state.window.fullscreen_w = work_w
         state.window.fullscreen_h = work_h
 
-        # Calculate window size based on current image
-        if state.cache.curr:
-            img_w, img_h = state.cache.curr.w, state.cache.curr.h
+        if ti:
+            scale = state.view.scale
+            img_dw = ti.w * scale
+            img_dh = ti.h * scale
+            # Image's current absolute screen position (the fullscreen render
+            # surface origin == work-area origin).
+            img_sx = work_x + state.view.offx
+            img_sy = work_y + state.view.offy
+            fits = img_dw <= work_w + 0.5 and img_dh <= work_h + 0.5
         else:
-            img_w, img_h = work_w // 2, work_h // 2
-
-        # Account for window decorations (title bar ~32px, borders ~8px each side)
-        title_bar_h = 32
-        border_w = 8
-        available_w = work_w - border_w * 2
-        available_h = work_h - title_bar_h - border_w
-
-        # Calculate scale: at least 50%, at most 100%
-        scale_w = available_w / img_w if img_w > 0 else 1.0
-        scale_h = available_h / img_h if img_h > 0 else 1.0
-        max_fit_scale = min(scale_w, scale_h)
-
-        if max_fit_scale >= 1.0:
             scale = 1.0
-        elif max_fit_scale >= 0.5:
-            scale = max_fit_scale
+            img_dw = img_dh = 0.0
+            img_sx, img_sy = float(work_x), float(work_y)
+            fits = False
+
+        if ti and fits:
+            # Image fits on screen -> keep the current scale. Window = image
+            # size (>= WINDOWED_MIN); positioned so the image stays where it is
+            # on screen. Any extra window space (when the 200px min kicks in for
+            # a zoomed-out image) is centered around the image.
+            new_scale = scale
+            win_w = max(WINDOWED_MIN, int(round(img_dw)))
+            win_h = max(WINDOWED_MIN, int(round(img_dh)))
+            win_x = int(round(img_sx - (win_w - img_dw) / 2.0))
+            win_y = int(round(img_sy - (win_h - img_dh) / 2.0))
         else:
-            scale = max_fit_scale
+            # Image larger than the screen (or none) -> scale to fit, centered.
+            if ti:
+                new_scale = min(work_w * FIT_DEFAULT_SCALE / ti.w,
+                                work_h * FIT_DEFAULT_SCALE / ti.h)
+                img_dw = ti.w * new_scale
+                img_dh = ti.h * new_scale
+            else:
+                new_scale = 1.0
+                img_dw, img_dh = work_w * 0.5, work_h * 0.5
+            win_w = max(WINDOWED_MIN, int(round(img_dw)))
+            win_h = max(WINDOWED_MIN, int(round(img_dh)))
+            win_x = work_x + (work_w - win_w) // 2
+            win_y = work_y + (work_h - win_h) // 2
 
-        win_w = int(img_w * scale)
-        win_h = int(img_h * scale)
+        # Clamp the window into the work area (the title bar above the client
+        # area must remain on screen).
+        win_x = max(work_x, min(win_x, work_x + work_w - win_w))
+        win_y = max(work_y + TITLE_BAR_H, min(win_y, work_y + work_h - win_h))
 
-        # Ensure window doesn't exceed available area
-        win_w = min(win_w, available_w)
-        win_h = min(win_h, available_h)
-
-        # Ensure minimum reasonable size
-        win_w = max(win_w, MIN_WINDOW_WIDTH)
-        win_h = max(win_h, MIN_WINDOW_HEIGHT)
-
-        # Center window on work area
-        # Note: SetWindowPosition sets the position of the CLIENT area, not the whole window
-        # So we need to account for the title bar being ABOVE the client area
-        win_x = work_x + (work_w - win_w) // 2
-        win_y = work_y + (work_h - win_h) // 2
-
-        # Ensure the title bar (above client area) stays within work area
-        # The title bar starts at (win_y - title_bar_h), so we need win_y >= work_y + title_bar_h
-        min_y = work_y + title_bar_h
-        max_y = work_y + work_h - win_h
-
-        if win_y < min_y:
-            win_y = min_y
-        if win_y > max_y:
-            win_y = max_y
-        if win_x < work_x:
-            win_x = work_x
-        if win_x + win_w > work_x + work_w:
-            win_x = work_x + work_w - win_w
-
-        # First clear undecorated flag and set resizable
         try:
             rl.ClearWindowState(rl.FLAG_WINDOW_UNDECORATED)
             rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE)
-            # Set minimum window size to prevent UI issues
-            rl.SetWindowMinSize(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)
+            rl.SetWindowMinSize(WINDOWED_MIN, WINDOWED_MIN)
         except Exception:
             pass
-
-        # Then set window size and position
         try:
             rl.SetWindowSize(win_w, win_h)
             rl.SetWindowPosition(win_x, win_y)
@@ -356,46 +363,57 @@ def toggle_window_mode(state: AppState):
             pass
 
         state.windowed_mode = True
-        state.screenW, state.screenH = rl.GetScreenWidth(), rl.GetScreenHeight()
-
-        # Recalculate view for new window size
-        if state.cache.curr:
-            state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+        # Use the size we just set, not GetScreenWidth() — raylib still reports
+        # the old size on this frame, which would render one wrong frame (a
+        # visible flicker) before settling.
+        state.screenW, state.screenH = win_w, win_h
+        _post_toggle_settle.update(active=True, w=win_w, h=win_h, n=0)
+        # Same scale; image centered within the (possibly larger) window.
+        if ti:
+            state.view = ViewParams(
+                scale=new_scale,
+                offx=(state.screenW - ti.w * new_scale) / 2.0,
+                offy=(state.screenH - ti.h * new_scale) / 2.0,
+            )
             state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
 
-        # Re-apply blur effect with new hwnd if needed
         state.hwnd = get_window_handle_from_raylib()
-        WinBlur.enable(state.hwnd)
-
-        log(f"[WINDOW] Switched to windowed mode: {win_w}x{win_h}")
+        set_titlebar_dark(state.hwnd)
+        win_set_blur(state.hwnd, True)
+        log(f"[WINDOW] Windowed: {win_w}x{win_h} scale={new_scale:.3f} "
+            f"fits={bool(ti) and fits}")
     else:
-        # Switch back to fullscreen (borderless)
-        # Clear resizable flag and restore undecorated
+        # ── Windowed → fullscreen ───────────────────────────────────────────
+        # Capture the image's absolute screen position first so it stays put:
+        # scale and position are preserved, the screen just opens up around it.
+        try:
+            wp = rl.GetWindowPosition()
+            cur_win_x, cur_win_y = float(wp.x), float(wp.y)
+        except Exception:
+            cur_win_x = float(state.window.fullscreen_x)
+            cur_win_y = float(state.window.fullscreen_y)
+        cur_scale = state.view.scale
+        img_sx = cur_win_x + state.view.offx
+        img_sy = cur_win_y + state.view.offy
+
         try:
             rl.ClearWindowState(rl.FLAG_WINDOW_RESIZABLE)
         except Exception:
             pass
-
-        flags = rl.FLAG_WINDOW_UNDECORATED | getattr(rl, 'FLAG_WINDOW_ALWAYS_RUN', 0)
+        flags = _fullscreen_window_flags()
         try:
             rl.SetWindowState(flags)
         except Exception:
             pass
 
-        # Restore fullscreen size and position
-        # Always get current work area to validate saved values
         current_work_x, current_work_y, current_work_w, current_work_h = get_work_area()
-
         work_x = state.window.fullscreen_x
         work_y = state.window.fullscreen_y
         work_w = state.window.fullscreen_w
         work_h = state.window.fullscreen_h
-
-        # Use current work area if saved values are invalid or outdated
-        # (e.g., monitor changed, resolution changed, taskbar moved)
         if (work_w == 0 or work_h == 0 or
-            work_w != current_work_w or work_h != current_work_h or
-            work_x != current_work_x or work_y != current_work_y):
+                work_w != current_work_w or work_h != current_work_h or
+                work_x != current_work_x or work_y != current_work_y):
             work_x, work_y = current_work_x, current_work_y
             work_w, work_h = current_work_w, current_work_h
 
@@ -406,102 +424,81 @@ def toggle_window_mode(state: AppState):
             pass
 
         state.windowed_mode = False
-        state.screenW, state.screenH = rl.GetScreenWidth(), rl.GetScreenHeight()
-
-        # Recalculate view for restored window size
-        if state.cache.curr:
-            state.view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+        # Use the size we just set, not GetScreenWidth() (still stale this frame).
+        state.screenW, state.screenH = work_w, work_h
+        _post_toggle_settle.update(active=True, w=work_w, h=work_h, n=0)
+        # Keep scale and on-screen position (fullscreen surface origin == work-area origin).
+        if ti:
+            nv = ViewParams(scale=cur_scale, offx=img_sx - work_x, offy=img_sy - work_y)
+            state.view = clamp_pan(nv, ti, state.screenW, state.screenH)
             state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
 
-        # Re-apply blur effect
         state.hwnd = get_window_handle_from_raylib()
-        WinBlur.enable(state.hwnd)
-
-        log(f"[WINDOW] Switched to fullscreen mode: {work_w}x{work_h}")
-
-
-def _image_resize_mut(img, w: int, h: int):
-    if hasattr(rl, 'ffi'):
-        try:
-            p = rl.ffi.new("Image *", img)
-            try:
-                rl.ImageResize(p, int(w), int(h))
-            except Exception:
-                rl.ImageResizeNN(p, int(w), int(h))
-            return p[0]
-        except Exception:
-            pass
-    for fn in (
-            lambda im: rl.ImageResize(ctypes.byref(im), int(w), int(h)),
-            lambda im: rl.ImageResize(im, int(w), int(h)),
-            lambda im: rl.ImageResizeNN(ctypes.byref(im), int(w), int(h)),
-            lambda im: rl.ImageResizeNN(im, int(w), int(h)),
-    ):
-        try:
-            fn(img)
-            return img
-        except Exception:
-            continue
-    return img
-
-
-def load_image_cpu_only(path: str):
-    file_size_mb = os.path.getsize(path) / (1024 * 1024)
-    if file_size_mb > MAX_FILE_SIZE_MB:
-        raise RuntimeError(f"file too large: {file_size_mb:.1f}MB")
-
-    safe_path = get_short_path_name(path)
-    try:
-        img = rl.LoadImage(safe_path)
-    except Exception:
-        img = rl.LoadImage(safe_path.encode('utf-8'))
-
-    w, h = img.width, img.height
-    if w <= 0 or h <= 0:
-        raise RuntimeError("empty image")
-
-    if w > MAX_IMAGE_DIMENSION or h > MAX_IMAGE_DIMENSION:
-        scale = min(MAX_IMAGE_DIMENSION / w, MAX_IMAGE_DIMENSION / h)
-        new_w = max(1, int(w * scale))
-        new_h = max(1, int(h * scale))
-        log(f"[LOAD_CPU][RESIZE] {os.path.basename(path)}: {w}x{h} -> {new_w}x{new_h}")
-        img = _image_resize_mut(img, new_w, new_h)
-
-    return img
-
-
-def image_to_textureinfo(img, path: str) -> TextureInfo:
-    tex = rl.LoadTextureFromImage(img)
-    w, h = img.width, img.height
-    try:
-        rl.UnloadImage(img)
-    except Exception:
-        pass
-    return TextureInfo(tex=tex, w=w, h=h, path=path)
+        set_titlebar_dark(state.hwnd)
+        win_set_blur(state.hwnd, True)
+        log(f"[WINDOW] Fullscreen: {work_w}x{work_h} scale={cur_scale:.3f}")
 
 
 def unload_texture_deferred(state: AppState, ti: Optional[TextureInfo]):
+    if _LARGE_TEXTURE_CACHE.contains_texture(ti):
+        log(f"[FULL_CACHE][KEEP] {os.path.basename(ti.path)}")
+        return
+    _TEXTURE_MANAGER.defer_unload(state, ti)
+
+
+def _same_texture(left: Optional[TextureInfo], right: Optional[TextureInfo]) -> bool:
+    if not left or not right:
+        return False
+    left_id = getattr(left.tex, "id", 0)
+    return left_id > 0 and left_id == getattr(right.tex, "id", 0)
+
+
+def _is_texture_active(state: AppState, ti: Optional[TextureInfo]) -> bool:
     if not ti:
-        return
-    tex = getattr(ti, 'tex', None)
-    if not tex:
-        return
-    tex_id = getattr(tex, 'id', 0)
-    if tex_id and tex_id > 0:
-        state.to_unload.append(tex)
-        log(f"[DEFER_UNLOAD] Queued: {os.path.basename(ti.path)} (id={tex_id})")
+        return False
+    for active in (
+        state.cache.curr,
+        state.cache.prev,
+        state.cache.next,
+        state.waiting_prev_snapshot,
+        state.switch_anim_prev_tex,
+    ):
+        if _same_texture(active, ti):
+            return True
+    return False
+
+
+def _active_texture_ids(state: Optional[AppState]) -> set[int]:
+    if state is None:
+        return set()
+    active_ids = set()
+    for texture in (
+        state.cache.curr,
+        state.cache.prev,
+        state.cache.next,
+        state.waiting_prev_snapshot,
+        state.switch_anim_prev_tex,
+    ):
+        if texture and getattr(texture, "tex", None):
+            tex_id = getattr(texture.tex, "id", 0)
+            if tex_id:
+                active_ids.add(tex_id)
+    return active_ids
+
+
+def drop_large_cached_path(state: AppState, path: str) -> None:
+    cached = _LARGE_TEXTURE_CACHE.remove(path)
+    if cached and not _is_texture_active(state, cached):
+        _TEXTURE_MANAGER.defer_unload(state, cached)
+
+
+def drop_cached_path(state: AppState, path: str) -> None:
+    drop_large_cached_path(state, path)
+    _ANIMATED_CONTENT_CACHE.remove(path)
 
 
 def process_deferred_unloads(state: AppState):
-    while state.to_unload:
-        tex = state.to_unload.pop()
-        try:
-            tex_id = getattr(tex, 'id', 0)
-            if tex_id and tex_id > 0:
-                rl.UnloadTexture(tex)
-                log(f"[UNLOAD] Texture id={tex_id}")
-        except Exception as e:
-            log(f"[UNLOAD][ERR] {e!r}")
+    _TEXTURE_MANAGER.process_deferred_unloads(state)
 
 
 def compute_fit_view(state, frac):
@@ -517,40 +514,12 @@ def clamp_pan(view: ViewParams, img: TextureInfo, screenW: int, screenH: int) ->
     return clamp_pan_pure(view, img.w, img.h, screenW, screenH)
 
 
-def recompute_view_anchor_zoom(view: ViewParams, new_scale: float, anchor: Tuple[int, int],
-                               img: TextureInfo) -> ViewParams:
-    """Wrapper for anchor_zoom_pure that accepts TextureInfo."""
-    return anchor_zoom_pure(view, new_scale, anchor, img.w, img.h)
-
-
 def start_zoom_animation(state: AppState, target_view: ViewParams):
-    state.zoom_anim_active = True
-    state.zoom_anim_t0 = now()
-    state.zoom_anim_from = ViewParams(state.view.scale, state.view.offx, state.view.offy)
-    state.zoom_anim_to = target_view
+    _ZOOM_ANIMATION.start(state, target_view)
 
 
 def update_zoom_animation(state: AppState):
-    if not state.zoom_anim_active:
-        return
-
-    dur = ANIM_ZOOM_MS / 1000.0
-    t = 1.0 if dur <= 0.0 else (now() - state.zoom_anim_t0) / dur
-    if t >= 1.0:
-        state.zoom_anim_active = False
-        if state.cache.curr:
-            # Use clamp_pan instead of sanitize_view to preserve pan position
-            state.view = clamp_pan(state.zoom_anim_to, state.cache.curr, state.screenW, state.screenH)
-        else:
-            state.view = state.zoom_anim_to
-        return
-
-    t_eased = ease_out_quad(t)
-    state.view = ViewParams(
-        scale=lerp(state.zoom_anim_from.scale, state.zoom_anim_to.scale, t_eased),
-        offx=lerp(state.zoom_anim_from.offx, state.zoom_anim_to.offx, t_eased),
-        offy=lerp(state.zoom_anim_from.offy, state.zoom_anim_to.offy, t_eased),
-    )
+    _ZOOM_ANIMATION.update(state, ANIM_ZOOM_MS)
 
 
 def win_set_blur(hwnd, enabled: bool):
@@ -570,7 +539,7 @@ def apply_bg_mode(state: AppState):
     global _current_blur_enabled
 
     mode = BG_MODES[state.bg_mode_index]
-    blur_wanted = mode["blur"]
+    blur_wanted = mode["blur"] and bool(getattr(cfg, "BLUR_ENABLED", True))
 
     # Only call DWM APIs when blur state actually changes
     if _current_blur_enabled != blur_wanted:
@@ -613,7 +582,7 @@ def render_image_at(ti: TextureInfo, v: ViewParams, alpha: float = 1.0):
 
 
 def draw_loading_indicator(state: AppState):
-    if not state.loading_current:
+    if not state.loading_current and not state.transforming:
         return
 
     rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(0, 0, 0, 120))
@@ -628,7 +597,8 @@ def draw_loading_indicator(state: AppState):
 
     rl.DrawRing(RL_V2(cx, cy), radius - thickness, radius, angle, angle + 90, 32, RL_Color(255, 255, 255, 220))
 
-    text = "Loading..."
+    from imagura.i18n import tr
+    text = tr("misc.loading")
     font_size = 28
     try:
         text_width = rl.MeasureText(text, font_size)
@@ -662,7 +632,7 @@ def render_image(state: AppState):
                 log(f"[OPEN_ANIM] Finished: scale={state.view.scale:.3f} off=({state.view.offx:.1f},{state.view.offy:.1f})")
             t = 1.0
         t_eased = ease_out_quad(t)
-        from_view = compute_fit_view(state, FIT_OPEN_SCALE)
+        from_view = state.anim.open_from_view
         to_view = state.last_fit_view
         v = ViewParams(
             scale=lerp(from_view.scale, to_view.scale, t_eased),
@@ -750,7 +720,8 @@ def update_close_button_alpha(state: AppState):
         t = (trigger_radius - dist) / (trigger_radius - CLOSE_BTN_RADIUS * 1.5)
         target_alpha = lerp(CLOSE_BTN_ALPHA_FAR, CLOSE_BTN_ALPHA_MAX, t)
 
-    fade_speed = 0.15
+    dt = rl.GetFrameTime()
+    fade_speed = min(1.0, 18.0 * dt)
     diff = target_alpha - state.close_btn_alpha
     state.close_btn_alpha += diff * fade_speed
 
@@ -797,150 +768,14 @@ def check_close_button_click(state: AppState) -> bool:
     return is_point_in_close_button(state, mouse.x, mouse.y)
 
 
-# Cache for image metadata to avoid re-reading EXIF every frame
-_metadata_cache: Dict[str, Dict[str, str]] = {}
+def trigger_scale_overlay(state: AppState, mode=""):
+    """Trigger scale overlay. mode: '' for plain %, 'real'/'fit'/'custom' for labeled."""
+    _SCALE_OVERLAY.trigger(state, mode)
 
 
-def get_image_metadata(filepath: str) -> Dict[str, str]:
-    """Read EXIF metadata from image file. Returns cached result if available."""
-    if filepath in _metadata_cache:
-        return _metadata_cache[filepath]
-
-    metadata: Dict[str, str] = {}
-
-    if not HAS_PIL:
-        _metadata_cache[filepath] = metadata
-        return metadata
-
-    try:
-        with Image.open(filepath) as img:
-            exif_data = img._getexif()
-            if exif_data:
-                for tag_id, value in exif_data.items():
-                    tag_name = TAGS.get(tag_id, str(tag_id))
-
-                    # Date taken
-                    if tag_name == 'DateTimeOriginal':
-                        try:
-                            dt = datetime.strptime(str(value), '%Y:%m:%d %H:%M:%S')
-                            metadata['date'] = dt.strftime('%Y-%m-%d %H:%M')
-                        except (ValueError, TypeError):
-                            metadata['date'] = str(value)
-
-                    # Camera model
-                    elif tag_name == 'Model':
-                        metadata['camera'] = str(value).strip()
-
-                    # Focal length
-                    elif tag_name == 'FocalLength':
-                        if hasattr(value, 'numerator') and hasattr(value, 'denominator'):
-                            focal = value.numerator / value.denominator if value.denominator else 0
-                            metadata['focal'] = f"{focal:.0f}mm"
-                        else:
-                            metadata['focal'] = f"{value}mm"
-
-                    # Aperture
-                    elif tag_name == 'FNumber':
-                        if hasattr(value, 'numerator') and hasattr(value, 'denominator'):
-                            f_num = value.numerator / value.denominator if value.denominator else 0
-                            metadata['aperture'] = f"f/{f_num:.1f}"
-                        else:
-                            metadata['aperture'] = f"f/{value}"
-
-                    # ISO
-                    elif tag_name == 'ISOSpeedRatings':
-                        metadata['iso'] = f"ISO {value}"
-
-                    # Exposure time
-                    elif tag_name == 'ExposureTime':
-                        if hasattr(value, 'numerator') and hasattr(value, 'denominator'):
-                            if value.denominator and value.numerator:
-                                if value.numerator < value.denominator:
-                                    metadata['exposure'] = f"1/{value.denominator // value.numerator}s"
-                                else:
-                                    exp = value.numerator / value.denominator
-                                    metadata['exposure'] = f"{exp:.1f}s"
-                        else:
-                            metadata['exposure'] = f"{value}s"
-
-    except Exception as e:
-        log(f"[METADATA] Error reading EXIF from {filepath}: {e}")
-
-    _metadata_cache[filepath] = metadata
-    return metadata
-
-
-def get_zoom_mode_label(state: AppState) -> str:
-    """Get human-readable zoom mode label based on zoom_state_cycle."""
-    if state.zoom_state_cycle == 0:
-        return "1:1"
-    elif state.zoom_state_cycle == 1:
-        return "Fit"
-    else:
-        return "Custom"
-
-
-def get_filename_text_color(state: AppState):
-    # Always white - shadow provides contrast on light backgrounds
-    return RL_Color(255, 255, 255, 255)
-
-
-def draw_filename(state: AppState):
-    """Draw image index and filename at top of screen."""
-    if not state.show_filename or state.index >= len(state.current_dir_images):
-        return
-
-    filepath = state.current_dir_images[state.index]
-    filename = os.path.basename(filepath)
-
-    # Build info string: [index/total] filename
-    total = len(state.current_dir_images)
-    info_text = f"[{state.index + 1} / {total}] {filename}"
-
-    font_size = cfg.FONT_DISPLAY_SIZE
-    color = get_filename_text_color(state)
-    shadow_color = RL_Color(0, 0, 0, 150)
-
-    def draw_text_with_shadow(text: str, x: int, y: int, size: int, use_unicode: bool):
-        """Helper to draw text with shadow effect and bold simulation."""
-        text_bytes = text.encode('utf-8')
-        if use_unicode and state.unicode_font:
-            # Shadow passes
-            for dx in range(-1, 2):
-                for dy in range(1, 3):
-                    rl.DrawTextEx(state.unicode_font, text_bytes,
-                                  RL_V2(x + dx, y + dy), size, 1.0, shadow_color)
-            # Main text with bold effect (draw twice with 1px offset)
-            rl.DrawTextEx(state.unicode_font, text_bytes, RL_V2(x, y), size, 1.0, color)
-            rl.DrawTextEx(state.unicode_font, text_bytes, RL_V2(x + 1, y), size, 1.0, color)
-        else:
-            # Fallback to default font
-            for dx in range(-1, 2):
-                for dy in range(1, 3):
-                    RL_DrawText(text, x + dx, y + dy, size, shadow_color)
-            # Bold effect
-            RL_DrawText(text, x, y, size, color)
-            RL_DrawText(text, x + 1, y, size, color)
-
-    # Measure and center text
-    if state.unicode_font:
-        try:
-            text_vec = rl.MeasureTextEx(state.unicode_font, info_text.encode('utf-8'), font_size, 1.0)
-            text_width = int(text_vec.x)
-            x = (state.screenW - text_width) // 2
-            draw_text_with_shadow(info_text, x, 40, font_size, use_unicode=True)
-            return
-        except Exception:
-            pass
-
-    # Fallback measurement
-    try:
-        text_width = rl.MeasureText(info_text, font_size)
-    except TypeError:
-        text_width = rl.MeasureText(info_text.encode('utf-8'), font_size)
-
-    x = (state.screenW - text_width) // 2
-    draw_text_with_shadow(info_text, x, 40, font_size, use_unicode=False)
+def update_scale_overlay(state: AppState):
+    """Fade out scale overlay after 1s delay."""
+    _SCALE_OVERLAY.update(state, rl.GetFrameTime())
 
 
 def draw_arrow_left(cx: int, cy: int, size: float, color):
@@ -965,19 +800,20 @@ def draw_arrow_right(cx: int, cy: int, size: float, color):
 
 def update_nav_buttons_fade(state: AppState):
     mouse = rl.GetMousePosition()
+    dt = rl.GetFrameTime()
     zoom_threshold = state.last_fit_view.scale * 1.1
     is_significantly_zoomed = state.view.scale > zoom_threshold
 
+    fade_speed = min(1.0, 18.0 * dt)
+
     if not is_significantly_zoomed:
-        state.nav_left_alpha = max(0.0, state.nav_left_alpha - 0.1)
-        state.nav_right_alpha = max(0.0, state.nav_right_alpha - 0.1)
+        state.nav_left_alpha = max(0.0, state.nav_left_alpha - fade_speed)
+        state.nav_right_alpha = max(0.0, state.nav_right_alpha - fade_speed)
         return
 
     cy = state.screenH // 2
     cx_left = 60
     cx_right = state.screenW - 60
-
-    fade_speed = 0.15
     trigger_radius = NAV_BTN_RADIUS * 3
 
     if state.index > 0:
@@ -1061,1205 +897,67 @@ def draw_nav_buttons(state: AppState):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Toolbar and Context Menu
+# Settings modal: schema + persistence live in imagura.settings_persistence;
+# rendering + input live in imagura.ui.settings_modal. The functions below are
+# thin shims kept here so the module-level test contract holds: save_config_value
+# and apply_saved_settings must remain importable as imagura2 attributes AND must
+# mirror applied values into imagura2's own module globals.
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def update_toolbar_alpha(state: AppState):
-    """Animate toolbar visibility."""
-    toolbar = state.ui.toolbar
-    if abs(toolbar.alpha - toolbar.target_alpha) > 0.01:
-        speed = 1000.0 / TOOLBAR_SLIDE_MS
-        dt = rl.GetFrameTime()
-        if toolbar.target_alpha > toolbar.alpha:
-            toolbar.alpha = min(toolbar.target_alpha, toolbar.alpha + speed * dt)
-        else:
-            toolbar.alpha = max(toolbar.target_alpha, toolbar.alpha - speed * dt)
-    else:
-        toolbar.alpha = toolbar.target_alpha
 
-
-def get_toolbar_panel_bounds(state: AppState) -> tuple:
-    """Get toolbar panel bounds (x, width)."""
-    sw = state.screenW
-    toolbar = state.ui.toolbar
-    n_buttons = len(toolbar.buttons)
-    n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
-    separator_width = TOOLBAR_BTN_SPACING
-
-    buttons_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
-                     (n_buttons - 1) * TOOLBAR_BTN_SPACING +
-                     n_separators * separator_width)
-    min_panel_width = buttons_width + TOOLBAR_BTN_RADIUS * 2 * 2
-    panel_width = max(min_panel_width, int(sw * 0.6))
-    panel_x = (sw - panel_width) // 2
-    return (panel_x, panel_width)
-
-
-def is_in_toolbar_zone(state: AppState, mouse_x: float, mouse_y: float) -> bool:
-    """Check if mouse is in toolbar trigger zone (within panel bounds)."""
-    # Use adaptive trigger zone: at least TOOLBAR_TRIGGER_MIN_PX or 5% of screen
-    trigger_height = max(state.screenH * TOOLBAR_TRIGGER_FRAC, TOOLBAR_TRIGGER_MIN_PX)
-    if mouse_y >= trigger_height:
-        return False
-    panel_x, panel_width = get_toolbar_panel_bounds(state)
-    return panel_x <= mouse_x <= panel_x + panel_width
-
-
-def get_toolbar_button_at(state: AppState, mx: float, my: float) -> int:
-    """Get toolbar button index at mouse position, or -1 if none."""
-    toolbar = state.ui.toolbar
-    if toolbar.alpha < 0.5:
-        return -1
-
-    n_buttons = len(toolbar.buttons)
-    n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
-    separator_width = TOOLBAR_BTN_SPACING
-
-    total_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
-                   (n_buttons - 1) * TOOLBAR_BTN_SPACING +
-                   n_separators * separator_width)
-    start_x = (state.screenW - total_width) // 2 + TOOLBAR_BTN_RADIUS
-    cy = TOOLBAR_HEIGHT // 2
-
-    current_x = start_x
-    for i, btn in enumerate(toolbar.buttons):
-        cx = current_x
-        dx = mx - cx
-        dy = my - cy
-        if (dx * dx + dy * dy) <= (TOOLBAR_BTN_RADIUS * TOOLBAR_BTN_RADIUS):
-            return i
-
-        # Move to next button position
-        current_x += TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING
-        if btn.separator_after:
-            current_x += separator_width
-
-    return -1
-
-
-def draw_rotate_icon(cx: int, cy: int, r: float, clockwise: bool, color):
-    """Draw rotation arrow icon."""
-    segments = 8
-
-    if clockwise:
-        # Arc from top going clockwise (right, down, left)
-        start_angle = -120  # Start from upper-left area
-        arc_span = 270
-        points = []
-        for i in range(segments + 1):
-            angle = math.radians(start_angle + (arc_span * i / segments))
-            px = cx + r * math.cos(angle)
-            py = cy + r * math.sin(angle)
-            points.append((px, py))
-
-        # Draw arc
-        for i in range(len(points) - 1):
-            rl.DrawLineEx(RL_V2(points[i][0], points[i][1]),
-                         RL_V2(points[i+1][0], points[i+1][1]), 2.0, color)
-
-        # Arrowhead at end - pointing in clockwise direction (tangent)
-        end_angle = math.radians(start_angle + arc_span)
-        end_x, end_y = points[-1]
-        arrow_size = r * 0.5
-        # Tangent for clockwise is perpendicular to radius, pointing "forward"
-        tangent_angle = end_angle + math.pi / 2
-        # Two lines forming arrowhead
-        arr_angle1 = tangent_angle + math.radians(150)
-        arr_angle2 = tangent_angle - math.radians(150)
-        rl.DrawLineEx(RL_V2(end_x, end_y),
-                     RL_V2(end_x + arrow_size * math.cos(arr_angle1),
-                           end_y + arrow_size * math.sin(arr_angle1)), 2.0, color)
-        rl.DrawLineEx(RL_V2(end_x, end_y),
-                     RL_V2(end_x + arrow_size * math.cos(arr_angle2),
-                           end_y + arrow_size * math.sin(arr_angle2)), 2.0, color)
-    else:
-        # Counter-clockwise: arc from top going left, down, right
-        start_angle = -60
-        arc_span = 270
-        points = []
-        for i in range(segments + 1):
-            angle = math.radians(start_angle - (arc_span * i / segments))
-            px = cx + r * math.cos(angle)
-            py = cy + r * math.sin(angle)
-            points.append((px, py))
-
-        # Draw arc
-        for i in range(len(points) - 1):
-            rl.DrawLineEx(RL_V2(points[i][0], points[i][1]),
-                         RL_V2(points[i+1][0], points[i+1][1]), 2.0, color)
-
-        # Arrowhead at end - pointing in counter-clockwise direction
-        end_angle = math.radians(start_angle - arc_span)
-        end_x, end_y = points[-1]
-        arrow_size = r * 0.5
-        # Tangent for counter-clockwise is perpendicular to radius, pointing "backward"
-        tangent_angle = end_angle - math.pi / 2
-        arr_angle1 = tangent_angle + math.radians(150)
-        arr_angle2 = tangent_angle - math.radians(150)
-        rl.DrawLineEx(RL_V2(end_x, end_y),
-                     RL_V2(end_x + arrow_size * math.cos(arr_angle1),
-                           end_y + arrow_size * math.sin(arr_angle1)), 2.0, color)
-        rl.DrawLineEx(RL_V2(end_x, end_y),
-                     RL_V2(end_x + arrow_size * math.cos(arr_angle2),
-                           end_y + arrow_size * math.sin(arr_angle2)), 2.0, color)
-
-
-def draw_flip_icon(cx: int, cy: int, r: float, color):
-    """Draw horizontal flip icon."""
-    arrow_w = r * 0.6
-    arrow_h = r * 0.8
-    gap = r * 0.15
-
-    # Left arrow
-    rl.DrawLineEx(RL_V2(cx - gap - arrow_w, cy),
-                 RL_V2(cx - gap, cy - arrow_h), 2.0, color)
-    rl.DrawLineEx(RL_V2(cx - gap - arrow_w, cy),
-                 RL_V2(cx - gap, cy + arrow_h), 2.0, color)
-    rl.DrawLineEx(RL_V2(cx - gap, cy - arrow_h),
-                 RL_V2(cx - gap, cy + arrow_h), 2.0, color)
-
-    # Right arrow
-    rl.DrawLineEx(RL_V2(cx + gap + arrow_w, cy),
-                 RL_V2(cx + gap, cy - arrow_h), 2.0, color)
-    rl.DrawLineEx(RL_V2(cx + gap + arrow_w, cy),
-                 RL_V2(cx + gap, cy + arrow_h), 2.0, color)
-    rl.DrawLineEx(RL_V2(cx + gap, cy - arrow_h),
-                 RL_V2(cx + gap, cy + arrow_h), 2.0, color)
-
-
-def draw_gear_icon(cx: int, cy: int, r: float, color):
-    """Draw gear/settings icon."""
-    # Outer circle with teeth
-    teeth = 8
-    outer_r = r
-    inner_r = r * 0.6
-    tooth_depth = r * 0.25
-
-    # Draw gear teeth
-    for i in range(teeth):
-        angle = (2 * math.pi * i / teeth)
-        next_angle = (2 * math.pi * (i + 0.5) / teeth)
-
-        # Tooth outer corners
-        x1 = cx + (outer_r + tooth_depth) * math.cos(angle - math.pi / teeth / 2)
-        y1 = cy + (outer_r + tooth_depth) * math.sin(angle - math.pi / teeth / 2)
-        x2 = cx + (outer_r + tooth_depth) * math.cos(angle + math.pi / teeth / 2)
-        y2 = cy + (outer_r + tooth_depth) * math.sin(angle + math.pi / teeth / 2)
-
-        # Tooth base corners
-        x3 = cx + outer_r * math.cos(angle + math.pi / teeth / 2)
-        y3 = cy + outer_r * math.sin(angle + math.pi / teeth / 2)
-        x4 = cx + outer_r * math.cos(next_angle - math.pi / teeth / 2)
-        y4 = cy + outer_r * math.sin(next_angle - math.pi / teeth / 2)
-
-        # Draw tooth
-        rl.DrawLineEx(RL_V2(x1, y1), RL_V2(x2, y2), 2.0, color)
-        rl.DrawLineEx(RL_V2(x2, y2), RL_V2(x3, y3), 2.0, color)
-        rl.DrawLineEx(RL_V2(x3, y3), RL_V2(x4, y4), 2.0, color)
-
-        # Connect to next tooth
-        x5 = cx + outer_r * math.cos(next_angle - math.pi / teeth / 2)
-        y5 = cy + outer_r * math.sin(next_angle - math.pi / teeth / 2)
-        x6 = cx + (outer_r + tooth_depth) * math.cos(next_angle - math.pi / teeth / 2)
-        y6 = cy + (outer_r + tooth_depth) * math.sin(next_angle - math.pi / teeth / 2)
-
-    # Draw inner circle (hole)
-    segments = 16
-    for i in range(segments):
-        angle1 = 2 * math.pi * i / segments
-        angle2 = 2 * math.pi * (i + 1) / segments
-        x1 = cx + inner_r * math.cos(angle1)
-        y1 = cy + inner_r * math.sin(angle1)
-        x2 = cx + inner_r * math.cos(angle2)
-        y2 = cy + inner_r * math.sin(angle2)
-        rl.DrawLineEx(RL_V2(x1, y1), RL_V2(x2, y2), 2.0, color)
-
-
-def draw_toolbar(state: AppState):
-    """Draw top toolbar with action buttons."""
-    toolbar = state.ui.toolbar
-    if toolbar.alpha < 0.01:
-        return
-
-    sw = state.screenW
-    alpha = toolbar.alpha
-
-    # Count separators for width calculation
-    n_buttons = len(toolbar.buttons)
-    n_separators = sum(1 for btn in toolbar.buttons if btn.separator_after)
-    separator_width = TOOLBAR_BTN_SPACING  # Extra spacing for separator
-
-    buttons_width = (n_buttons * (TOOLBAR_BTN_RADIUS * 2) +
-                     (n_buttons - 1) * TOOLBAR_BTN_SPACING +
-                     n_separators * separator_width)
-    min_panel_width = buttons_width + TOOLBAR_BTN_RADIUS * 2 * 2  # +1 button on each side
-    panel_width = max(min_panel_width, int(sw * 0.6))  # 60% of screen or minimum
-
-    panel_x = (sw - panel_width) // 2
-    fade_width = 40  # Width of gradient fade on edges
-
-    # Draw background panel with gradient edges
-    bg_alpha_max = int(255 * TOOLBAR_BG_ALPHA * alpha)
-
-    # Left fade gradient
-    for i in range(fade_width):
-        fade_alpha = int(bg_alpha_max * (i / fade_width))
-        rl.DrawRectangle(panel_x + i, 0, 1, TOOLBAR_HEIGHT, RL_Color(0, 0, 0, fade_alpha))
-
-    # Center solid part
-    rl.DrawRectangle(panel_x + fade_width, 0, panel_width - fade_width * 2, TOOLBAR_HEIGHT,
-                    RL_Color(0, 0, 0, bg_alpha_max))
-
-    # Right fade gradient
-    for i in range(fade_width):
-        fade_alpha = int(bg_alpha_max * (1.0 - i / fade_width))
-        rl.DrawRectangle(panel_x + panel_width - fade_width + i, 0, 1, TOOLBAR_HEIGHT,
-                        RL_Color(0, 0, 0, fade_alpha))
-
-    # Calculate button start position (centered within panel)
-    start_x = (sw - buttons_width) // 2 + TOOLBAR_BTN_RADIUS
-    cy = TOOLBAR_HEIGHT // 2
-
-    current_x = start_x
-    for i, btn in enumerate(toolbar.buttons):
-        cx = current_x
-        is_hover = (i == toolbar.hover_index)
-
-        btn_alpha = int(255 * alpha)
-        bg_btn_alpha = int(128 * alpha) if is_hover else int(80 * alpha)
-        rl.DrawCircle(cx, cy, TOOLBAR_BTN_RADIUS, RL_Color(0, 0, 0, bg_btn_alpha))
-        rl.DrawCircleLines(cx, cy, TOOLBAR_BTN_RADIUS, RL_Color(255, 255, 255, btn_alpha))
-
-        # Draw icon
-        icon_r = TOOLBAR_BTN_RADIUS * 0.45
-        icon_color = RL_Color(255, 255, 255, btn_alpha)
-        if btn.id == ToolbarButtonId.SETTINGS:
-            draw_gear_icon(cx, cy, icon_r, icon_color)
-        elif btn.id == ToolbarButtonId.ROTATE_CW:
-            draw_rotate_icon(cx, cy, icon_r, clockwise=True, color=icon_color)
-        elif btn.id == ToolbarButtonId.ROTATE_CCW:
-            draw_rotate_icon(cx, cy, icon_r, clockwise=False, color=icon_color)
-        elif btn.id == ToolbarButtonId.FLIP_H:
-            draw_flip_icon(cx, cy, icon_r, icon_color)
-
-        # Move to next button position
-        current_x += TOOLBAR_BTN_RADIUS * 2 + TOOLBAR_BTN_SPACING
-
-        # Draw separator after this button if needed
-        if btn.separator_after and i < n_buttons - 1:
-            # Add separator space first, then draw in the middle of the gap
-            current_x += separator_width
-            # Gap is between prev button right edge and next button left edge
-            # sep_x = midpoint = current_x - TOOLBAR_BTN_RADIUS - (separator_width + TOOLBAR_BTN_SPACING) / 2
-            sep_x = current_x - TOOLBAR_BTN_RADIUS - (separator_width + TOOLBAR_BTN_SPACING) // 2
-            sep_alpha = int(150 * alpha)
-            rl.DrawLineEx(RL_V2(sep_x, cy - TOOLBAR_BTN_RADIUS * 0.7),
-                         RL_V2(sep_x, cy + TOOLBAR_BTN_RADIUS * 0.7),
-                         2.0, RL_Color(255, 255, 255, sep_alpha))
-
-
-def get_context_menu_item_at(state: AppState, mx: float, my: float) -> int:
-    """Get context menu item index at mouse position, or -1 if none."""
-    menu = state.ui.context_menu
-    if not menu.visible:
-        return -1
-
-    n_items = len(menu.items)
-    menu_w = MENU_ITEM_WIDTH
-    menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
-
-    x = min(menu.x, state.screenW - menu_w - 5)
-    y = min(menu.y, state.screenH - menu_h - 5)
-    x = max(5, x)
-    y = max(5, y)
-
-    if not (x <= mx <= x + menu_w):
-        return -1
-
-    item_start_y = y + MENU_PADDING
-    for i in range(n_items):
-        item_y = item_start_y + i * MENU_ITEM_HEIGHT
-        if item_y <= my < item_y + MENU_ITEM_HEIGHT:
-            return i
-    return -1
-
-
-def draw_context_menu(state: AppState):
-    """Draw right-click context menu."""
-    menu = state.ui.context_menu
-    if not menu.visible:
-        return
-
-    n_items = len(menu.items)
-    if n_items == 0:
-        return
-
-    font_size = cfg.FONT_DISPLAY_SIZE
-    menu_w = MENU_ITEM_WIDTH
-    menu_h = n_items * MENU_ITEM_HEIGHT + MENU_PADDING * 2
-
-    x = min(menu.x, state.screenW - menu_w - 5)
-    y = min(menu.y, state.screenH - menu_h - 5)
-    x = max(5, x)
-    y = max(5, y)
-
-    # Shadow
-    rl.DrawRectangle(x + 4, y + 4, menu_w, menu_h, RL_Color(0, 0, 0, 100))
-    # Background
-    rl.DrawRectangle(x, y, menu_w, menu_h, RL_Color(40, 40, 40, int(255 * MENU_BG_ALPHA)))
-    rl.DrawRectangleLines(x, y, menu_w, menu_h, RL_Color(80, 80, 80, 255))
-
-    item_y = y + MENU_PADDING
-    for i, item in enumerate(menu.items):
-        is_hover = (i == menu.hover_index)
-
-        if is_hover:
-            rl.DrawRectangle(x + 2, item_y, menu_w - 4, MENU_ITEM_HEIGHT,
-                           RL_Color(255, 255, 255, int(255 * MENU_HOVER_ALPHA)))
-
-        text_color = RL_Color(255, 255, 255, 255) if is_hover else RL_Color(200, 200, 200, 255)
-        text_x = x + MENU_PADDING + 8
-        text_y = item_y + (MENU_ITEM_HEIGHT - font_size) // 2
-
-        # Use unicode font for Cyrillic support
-        if state.unicode_font:
-            try:
-                label_bytes = item.label.encode('utf-8')
-                rl.DrawTextEx(state.unicode_font, label_bytes, RL_V2(text_x, text_y),
-                             font_size, 1.0, text_color)
-            except Exception:
-                RL_DrawText(item.label, text_x, text_y, font_size, text_color)
-        else:
-            RL_DrawText(item.label, text_x, text_y, font_size, text_color)
-
-        item_y += MENU_ITEM_HEIGHT
-
-
-# Settings window configuration - organized by tabs
-# Format: (display_label, config_key, value_type, min_val, max_val)
-# If config_key is None, it's a section header
-
-SETTINGS_TABS = [
-    {
-        "name": "Общие",
-        "items": [
-            ("Производительность", None, None, None, None),
-            ("Целевой FPS", "TARGET_FPS", int, 30, 240),
-            ("Асинхронные потоки", "ASYNC_WORKERS", int, 1, 32),
-            ("Масштабирование", None, None, None, None),
-            ("Масштаб по умолчанию", "FIT_DEFAULT_SCALE", float, 0.5, 1.0),
-            ("Масштаб при открытии", "FIT_OPEN_SCALE", float, 0.3, 1.0),
-            ("Макс. зум", "MAX_ZOOM", float, 5.0, 50.0),
-            ("Шаг зума (клавиши)", "ZOOM_STEP_KEYS", float, 0.01, 0.2),
-            ("Шаг зума (колесо)", "ZOOM_STEP_WHEEL", float, 0.01, 0.5),
-        ]
-    },
-    {
-        "name": "Анимация",
-        "items": [
-            ("Время анимации (мс)", None, None, None, None),
-            ("Переключение (клавиши)", "ANIM_SWITCH_KEYS_MS", int, 1, 2000),
-            ("Переключение (галерея)", "ANIM_SWITCH_GALLERY_MS", int, 1, 500),
-            ("Открытие изображения", "ANIM_OPEN_MS", int, 1, 2000),
-            ("Анимация зума", "ANIM_ZOOM_MS", int, 1, 500),
-            ("Переключение зума", "ANIM_TOGGLE_ZOOM_MS", int, 1, 500),
-            ("Слайд галереи", "GALLERY_SLIDE_MS", int, 1, 500),
-            ("Слайд тулбара", "TOOLBAR_SLIDE_MS", int, 1, 500),
-        ]
-    },
-    {
-        "name": "Интерфейс",
-        "items": [
-            ("Шрифт", None, None, None, None),
-            ("Размер шрифта", "FONT_DISPLAY_SIZE", int, 12, 72),
-            ("Тулбар", None, None, None, None),
-            ("Высота тулбара", "TOOLBAR_HEIGHT", int, 40, 100),
-            ("Радиус кнопок", "TOOLBAR_BTN_RADIUS", int, 16, 40),
-            ("Отступ кнопок", "TOOLBAR_BTN_SPACING", int, 10, 40),
-            ("Прозрачность фона", "TOOLBAR_BG_ALPHA", float, 0.3, 1.0),
-            ("Кнопка закрытия", None, None, None, None),
-            ("Радиус кнопки", "CLOSE_BTN_RADIUS", int, 16, 50),
-            ("Отступ от края", "CLOSE_BTN_MARGIN", int, 10, 50),
-        ]
-    },
-    {
-        "name": "Галерея",
-        "items": [
-            ("Размеры", None, None, None, None),
-            ("Высота (доля экрана)", "GALLERY_HEIGHT_FRAC", float, 0.05, 0.3),
-            ("Зона активации (доля)", "GALLERY_TRIGGER_FRAC", float, 0.02, 0.15),
-            ("Отступ миниатюр", "GALLERY_THUMB_SPACING", int, 5, 50),
-            ("Мин. масштаб миниатюр", "GALLERY_MIN_SCALE", float, 0.3, 1.0),
-            ("Мин. прозрачность", "GALLERY_MIN_ALPHA", float, 0.1, 0.8),
-            ("Миниатюры", None, None, None, None),
-            ("Лимит кэша", "THUMB_CACHE_LIMIT", int, 50, 1000),
-            ("Отступ внутри", "THUMB_PADDING", int, 2, 20),
-            ("Предзагрузка", "THUMB_PRELOAD_SPAN", int, 10, 100),
-        ]
-    },
-    {
-        "name": "Ввод",
-        "items": [
-            ("Мышь", None, None, None, None),
-            ("Двойной клик (мс)", "DOUBLE_CLICK_TIME_MS", int, 100, 600),
-            ("Таймаут бездействия (с)", "IDLE_THRESHOLD_SECONDS", float, 0.2, 2.0),
-            ("Клавиатура", None, None, None, None),
-            ("Задержка повтора (с)", "KEY_REPEAT_DELAY", float, 0.1, 1.0),
-            ("Интервал повтора (с)", "KEY_REPEAT_INTERVAL", float, 0.02, 0.2),
-            ("Навигация", None, None, None, None),
-            ("Радиус кнопок навиг.", "NAV_BTN_RADIUS", int, 20, 80),
-            ("Мин. зона края (пкс)", "NAV_EDGE_MIN_PX", int, 30, 150),
-        ]
-    },
-    {
-        "name": "Лимиты",
-        "items": [
-            ("Изображения", None, None, None, None),
-            ("Макс. размер (пкс)", "MAX_IMAGE_DIMENSION", int, 4096, 32768),
-            ("Макс. размер файла (МБ)", "MAX_FILE_SIZE_MB", int, 50, 1000),
-            ("Тяжёлый файл (МБ)", "HEAVY_FILE_SIZE_MB", int, 5, 100),
-            ("Тяжёлый мин. сторона", "HEAVY_MIN_SHORT_SIDE", int, 1000, 10000),
-            ("Окно", None, None, None, None),
-            ("Мин. ширина окна", "MIN_WINDOW_WIDTH", int, 200, 800),
-            ("Мин. высота окна", "MIN_WINDOW_HEIGHT", int, 150, 600),
-            ("Мин. высота галереи", "GALLERY_MIN_HEIGHT_PX", int, 40, 200),
-        ]
-    },
-]
-
-# Backward compatibility: flat list for legacy code
-SETTINGS_ITEMS = []
-for tab in SETTINGS_TABS:
-    SETTINGS_ITEMS.extend(tab["items"])
-
-
-def get_settings_item_index(item_idx: int) -> int:
-    """Convert visual item index to editable item index (skip headers)."""
-    editable_idx = 0
-    for i, item in enumerate(SETTINGS_ITEMS):
-        if item[1] is not None:  # Not a header
-            if i == item_idx:
-                return editable_idx
-            editable_idx += 1
-    return -1
-
-
-def save_config_value(config_key: str, value, val_type: type) -> bool:
-    """Save a single config value to config.py file."""
-    import imagura.config as cfg
-    config_path = os.path.join(os.path.dirname(__file__), "imagura", "config.py")
-
-    try:
-        # Read current file
-        with open(config_path, 'r', encoding='utf-8') as f:
-            content = f.read()
-
-        # Find and replace the value
-        import re
-        if val_type == float:
-            pattern = rf'^({config_key}\s*=\s*)[\d.]+(.*)$'
-            replacement = rf'\g<1>{round(float(value), 6)}\2'
-        else:
-            pattern = rf'^({config_key}\s*=\s*)\d+(.*)$'
-            replacement = rf'\g<1>{int(value)}\2'
-
-        new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
-
-        if count == 0:
-            log(f"[SETTINGS][ERR] Could not find {config_key} in config.py")
-            return False
-
-        # Write back
-        with open(config_path, 'w', encoding='utf-8') as f:
-            f.write(new_content)
-
-        # Update runtime value
-        setattr(cfg, config_key, val_type(value))
-        log(f"[SETTINGS] Saved {config_key} = {value}")
-        return True
-
-    except Exception as e:
-        log(f"[SETTINGS][ERR] Failed to save config: {e!r}")
-        return False
-
-
-def validate_settings_value(value_str: str, val_type: type, min_val, max_val) -> tuple:
-    """Validate a settings value. Returns (is_valid, parsed_value, error_msg)."""
-    if not value_str.strip():
-        return False, None, "Empty value"
-
-    try:
-        if val_type == int:
-            val = int(value_str)
-        elif val_type == float:
-            val = float(value_str)
-        else:
-            return False, None, "Unknown type"
-
-        if min_val is not None and val < min_val:
-            return False, None, f"Min: {min_val}"
-        if max_val is not None and val > max_val:
-            return False, None, f"Max: {max_val}"
-
-        return True, val, None
-
-    except ValueError:
-        return False, None, "Invalid number"
-
-
-def get_settings_color_scheme(state: AppState) -> dict:
-    """Get color scheme based on current background mode. Colors defined in config.py."""
-    bg_color = state.ui.bg_color
-    opacity = state.ui.bg_current_opacity
-
-    # Check if transparent mode (opacity < 1.0)
-    is_transparent = opacity < 1.0
-
-    # Check if light or dark background
-    is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
-
-    if is_transparent:
-        return SETTINGS_MODAL_COLORS_TRANSPARENT
-    elif is_light_bg:
-        return SETTINGS_MODAL_COLORS_LIGHT
-    else:
-        return SETTINGS_MODAL_COLORS_DARK
-
-
-def handle_settings_input(state: AppState) -> bool:
-    """Handle input for settings window with full text editing support."""
-    import imagura.config as cfg
-
-    settings = state.ui.settings
-    if not settings.visible:
-        return False
-
-    mouse = rl.GetMousePosition()
-
-    # Window dimensions (from config)
-    win_w = SETTINGS_MODAL_WIDTH
-    win_h = SETTINGS_MODAL_HEIGHT
-    win_x = (state.screenW - win_w) // 2
-    win_y = (state.screenH - win_h) // 2
-
-    # Font size for tab measurement
-    font_size = max(16, min(22, cfg.FONT_DISPLAY_SIZE - 4))
-    small_font = max(14, font_size - 2)
-
-    # Tab bar dimensions (from config)
-    tab_y = win_y + SETTINGS_TAB_TOP_Y
-    content_y = tab_y + SETTINGS_TAB_HEIGHT
-
-    # Content layout (from config)
-    item_h = SETTINGS_CONTENT_ITEM_HEIGHT
-    val_w = SETTINGS_CONTENT_VALUE_WIDTH
-    val_x = win_x + win_w - val_w - SETTINGS_CONTENT_VALUE_MARGIN
-
-    # Check close button click
-    close_x = win_x + win_w - SETTINGS_MODAL_CLOSE_SIZE - SETTINGS_MODAL_CLOSE_MARGIN
-    close_y_btn = win_y + SETTINGS_MODAL_TITLE_Y
-
-    if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-        # Close button
-        if (close_x <= mouse.x <= close_x + SETTINGS_MODAL_CLOSE_SIZE and
-            close_y_btn <= mouse.y <= close_y_btn + SETTINGS_MODAL_CLOSE_SIZE):
-            settings.hide()
-            return True
-
-        # Tab clicks - use dynamic tab positions
-        if tab_y <= mouse.y <= tab_y + SETTINGS_TAB_HEIGHT:
-            tab_positions = _get_tab_positions(state, win_x, small_font)
-            for i, (tx, tw) in enumerate(tab_positions):
-                if tx <= mouse.x <= tx + tw:
-                    if i != settings.active_tab:
-                        # Save current edit before switching tabs
-                        if settings.editing_item >= 0:
-                            _save_current_edit_for_tab(state, settings.active_tab)
-                        settings.active_tab = i
-                        settings.editing_item = -1
-                        settings.edit_state.reset()
-                        settings.scroll_offset = 0
-                    return True
-
-    # Get current tab items
-    current_tab = SETTINGS_TABS[settings.active_tab]
-    tab_items = current_tab["items"]
-
-    # Count editable items in current tab
-    total_editable = sum(1 for item in tab_items if item[1] is not None)
-
-    # Check if shift is held for selection
-    shift_held = rl.IsKeyDown(rl.KEY_LEFT_SHIFT) or rl.IsKeyDown(rl.KEY_RIGHT_SHIFT)
-    ctrl_held = rl.IsKeyDown(rl.KEY_LEFT_CONTROL) or rl.IsKeyDown(rl.KEY_RIGHT_CONTROL)
-
-    # Handle editing mode
-    if settings.editing_item >= 0:
-        edit = settings.edit_state
-
-        # Click handling - position cursor or switch field
-        if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-            item_y = content_y - settings.scroll_offset
-            editable_idx = 0
-
-            clicked_field = -1
-            for item in tab_items:
-                if item[1] is not None:
-                    if (val_x - 5 <= mouse.x <= val_x + val_w + 10 and
-                        item_y + 2 <= mouse.y <= item_y + item_h - 2):
-                        clicked_field = editable_idx
-                        break
-                    editable_idx += 1
-                item_y += item_h
-
-            if clicked_field == settings.editing_item:
-                # Click on same field - position cursor
-                edit.clear_selection()
-            elif clicked_field >= 0:
-                # Save and switch to another field
-                if _save_current_edit_for_tab(state, settings.active_tab):
-                    _start_editing_field(state, settings.active_tab, clicked_field)
-                return True
-            else:
-                # Click outside - save and exit editing
-                if _save_current_edit_for_tab(state, settings.active_tab):
-                    settings.editing_item = -1
-                    edit.reset()
-                return True
-
-        # Keyboard navigation
-        if rl.IsKeyPressed(rl.KEY_LEFT):
-            edit.move_cursor_left(shift_held)
-            return True
-
-        if rl.IsKeyPressed(rl.KEY_RIGHT):
-            edit.move_cursor_right(shift_held)
-            return True
-
-        if rl.IsKeyPressed(rl.KEY_HOME):
-            edit.move_cursor_home(shift_held)
-            return True
-
-        if rl.IsKeyPressed(rl.KEY_END):
-            edit.move_cursor_end(shift_held)
-            return True
-
-        # Ctrl+A - select all
-        if ctrl_held and rl.IsKeyPressed(rl.KEY_A):
-            edit.select_all()
-            return True
-
-        # Tab navigation between fields
-        if rl.IsKeyPressed(rl.KEY_TAB):
-            if _save_current_edit_for_tab(state, settings.active_tab):
-                if shift_held:
-                    new_idx = (settings.editing_item - 1) % total_editable
-                else:
-                    new_idx = (settings.editing_item + 1) % total_editable
-                _start_editing_field(state, settings.active_tab, new_idx)
-            return True
-
-        # Text input
-        key = rl.GetCharPressed()
-        while key > 0:
-            # Allow digits, decimal point, minus
-            if (48 <= key <= 57) or key == 46 or key == 45:
-                edit.insert_text(chr(key))
-            key = rl.GetCharPressed()
-
-        # Backspace
-        if rl.IsKeyPressed(rl.KEY_BACKSPACE):
-            edit.delete_char_before()
-            return True
-
-        # Delete
-        if rl.IsKeyPressed(rl.KEY_DELETE):
-            edit.delete_char_after()
-            return True
-
-        # Enter - save and exit
-        if rl.IsKeyPressed(rl.KEY_ENTER):
-            if _save_current_edit_for_tab(state, settings.active_tab):
-                settings.editing_item = -1
-                edit.reset()
-            return True
-
-        # Escape - cancel editing
-        if rl.IsKeyPressed(rl.KEY_ESCAPE):
-            settings.editing_item = -1
-            edit.reset()
-            return True
-
-        return True  # Consume all input while editing
-
-    # ESC closes settings when not editing
-    if rl.IsKeyPressed(rl.KEY_ESCAPE):
-        settings.hide()
-        return True
-
-    # Handle mouse wheel scrolling
-    content_h = win_h - (content_y - win_y) - SETTINGS_CONTENT_FOOTER_HEIGHT
-    wheel = rl.GetMouseWheelMove()
-    if wheel != 0:
-        max_scroll = max(0, len(tab_items) * item_h - content_h)
-        settings.scroll_offset = max(0, min(max_scroll, settings.scroll_offset - int(wheel * 40)))
-        return True
-
-    # Handle click to start editing
-    if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-        item_y = content_y - settings.scroll_offset
-        editable_idx = 0
-
-        for item in tab_items:
-            label, config_key, val_type, min_val, max_val = item
-
-            if config_key is not None:
-                if (val_x - 5 <= mouse.x <= val_x + val_w + 10 and
-                    item_y + 2 <= mouse.y <= item_y + item_h - 2 and
-                    content_y <= mouse.y <= content_y + content_h):
-                    _start_editing_field(state, settings.active_tab, editable_idx)
-                    return True
-                editable_idx += 1
-
-            item_y += item_h
-
-    return False
-
-
-def _save_current_edit_for_tab(state: AppState, tab_idx: int) -> bool:
-    """Save current edit value for a specific tab. Returns True if successful."""
-    import imagura.config as cfg
-
-    settings = state.ui.settings
-    if settings.editing_item < 0:
-        return True
-
-    tab_items = SETTINGS_TABS[tab_idx]["items"]
-    editable_idx = 0
-
-    for item in tab_items:
-        if item[1] is not None:
-            if editable_idx == settings.editing_item:
-                label, config_key, val_type, min_val, max_val = item
-                is_valid, parsed_val, error = validate_settings_value(
-                    settings.edit_state.text, val_type, min_val, max_val
-                )
-                if is_valid:
-                    save_config_value(config_key, parsed_val, val_type)
-                    setattr(cfg, config_key, parsed_val)
-                    log(f"[SETTINGS] Updated {config_key} = {parsed_val}")
-                    return True
-                else:
-                    log(f"[SETTINGS] Validation failed: {error}")
-                    return False
-            editable_idx += 1
-    return True
-
-
-def _start_editing_field(state: AppState, tab_idx: int, field_idx: int) -> None:
-    """Start editing a specific field."""
-    import imagura.config as cfg
-
-    settings = state.ui.settings
-    tab_items = SETTINGS_TABS[tab_idx]["items"]
-    editable_idx = 0
-
-    for item in tab_items:
-        if item[1] is not None:
-            if editable_idx == field_idx:
-                config_key = item[1]
-                current_val = getattr(cfg, config_key, 0)
-                settings.editing_item = field_idx
-                settings.edit_state.set_text(str(current_val))
-                return
-            editable_idx += 1
-
-
-def draw_settings_window(state: AppState):
-    """Draw settings window overlay with tabs and adaptive colors."""
-    import imagura.config as cfg
-
-    settings = state.ui.settings
-    if not settings.visible:
-        return
-
-    colors = get_settings_color_scheme(state)
-
-    # Window dimensions (from config)
-    win_w = SETTINGS_MODAL_WIDTH
-    win_h = SETTINGS_MODAL_HEIGHT
-    win_x = (state.screenW - win_w) // 2
-    win_y = (state.screenH - win_h) // 2
-
-    font_size = max(16, min(22, cfg.FONT_DISPLAY_SIZE - 4))
-    small_font = max(14, font_size - 2)
-    tab_font = small_font
-
-    # Darken background overlay
-    rl.DrawRectangle(0, 0, state.screenW, state.screenH, RL_Color(*colors["overlay"]))
-
-    # Window shadow
-    rl.DrawRectangle(win_x + SETTINGS_MODAL_SHADOW_OFFSET, win_y + SETTINGS_MODAL_SHADOW_OFFSET,
-                     win_w, win_h, RL_Color(0, 0, 0, 40))
-
-    # Window background
-    rl.DrawRectangle(win_x, win_y, win_w, win_h, RL_Color(*colors["window_bg"]))
-
-    # Border
-    rl.DrawRectangleLines(win_x, win_y, win_w, win_h, RL_Color(*colors["window_border"]))
-
-    # Title
-    title = "Настройки"
-    _draw_settings_text(state, title, win_x + 20, win_y + SETTINGS_MODAL_TITLE_Y, font_size + 2, colors["title_color"])
-
-    # Close button
-    close_x = win_x + win_w - SETTINGS_MODAL_CLOSE_SIZE - SETTINGS_MODAL_CLOSE_MARGIN
-    close_y = win_y + SETTINGS_MODAL_TITLE_Y
-    mouse = rl.GetMousePosition()
-    close_hover = (close_x <= mouse.x <= close_x + SETTINGS_MODAL_CLOSE_SIZE and
-                   close_y <= mouse.y <= close_y + SETTINGS_MODAL_CLOSE_SIZE)
-
-    close_color = colors["close_btn_hover"] if close_hover else colors["close_btn"]
-    _draw_settings_text(state, "X", close_x + 8, close_y + 2, font_size + 4, close_color)
-
-    # Tab bar - calculate widths based on text content
-    tab_y = win_y + SETTINGS_TAB_TOP_Y
-    tab_h = SETTINGS_TAB_HEIGHT
-
-    # Measure tab widths
-    tab_widths = []
-    for tab in SETTINGS_TABS:
-        if state.unicode_font:
-            tw = rl.MeasureTextEx(state.unicode_font, tab["name"].encode('utf-8'), tab_font, 1.0).x
-        else:
-            tw = len(tab["name"]) * (tab_font // 2)
-        tab_widths.append(int(tw) + SETTINGS_TAB_PADDING * 2)
-
-    # Content area border color
-    border_color = RL_Color(120, 120, 125, 255)  # Dark gray border
-    content_y = tab_y + tab_h
-    content_h = win_h - (content_y - win_y) - SETTINGS_CONTENT_FOOTER_HEIGHT
-
-    # Draw content area border (bottom and sides, top will be drawn with tabs)
-    content_border_x = win_x + SETTINGS_CONTENT_BORDER_MARGIN
-    content_border_w = win_w - SETTINGS_CONTENT_BORDER_MARGIN * 2
-    # Left border
-    rl.DrawLine(content_border_x, content_y, content_border_x, content_y + content_h, border_color)
-    # Right border
-    rl.DrawLine(content_border_x + content_border_w, content_y,
-                content_border_x + content_border_w, content_y + content_h, border_color)
-    # Bottom border
-    rl.DrawLine(content_border_x, content_y + content_h,
-                content_border_x + content_border_w, content_y + content_h, border_color)
-
-    # Draw tabs with borders
-    tab_x = win_x + SETTINGS_TAB_START_X
-    for i, tab in enumerate(SETTINGS_TABS):
-        tw = tab_widths[i]
-        is_active = (i == settings.active_tab)
-
-        if is_active:
-            # Active tab - lighter background, no bottom border
-            tab_bg = colors["tab_active"]
-            rl.DrawRectangle(tab_x, tab_y, tw, tab_h, RL_Color(*tab_bg))
-            # Top border
-            rl.DrawLine(tab_x, tab_y, tab_x + tw, tab_y, border_color)
-            # Left border
-            rl.DrawLine(tab_x, tab_y, tab_x, tab_y + tab_h, border_color)
-            # Right border
-            rl.DrawLine(tab_x + tw, tab_y, tab_x + tw, tab_y + tab_h, border_color)
-            # No bottom border - connects with content
-        else:
-            # Inactive tab - no background, just text
-            pass
-
-        # Tab text
-        tab_text_color = colors["tab_text_active"] if is_active else colors["tab_text"]
-        text_y = tab_y + (tab_h - tab_font) // 2
-        text_x = tab_x + SETTINGS_TAB_PADDING
-        _draw_settings_text(state, tab["name"], text_x, text_y, tab_font, tab_text_color)
-
-        tab_x += tw + SETTINGS_TAB_GAP
-
-    # Draw top border for content area (between tabs)
-    # From left edge to first tab
-    first_tab_x = win_x + SETTINGS_TAB_START_X
-    rl.DrawLine(content_border_x, content_y, first_tab_x, content_y, border_color)
-
-    # Between tabs and after last tab
-    tab_x = win_x + SETTINGS_TAB_START_X
-    for i, tw in enumerate(tab_widths):
-        if i == settings.active_tab:
-            # Skip drawing under active tab
-            pass
-        else:
-            # Draw line under inactive tabs
-            rl.DrawLine(tab_x, content_y, tab_x + tw, content_y, border_color)
-        tab_x += tw + SETTINGS_TAB_GAP
-
-    # From last tab to right edge
-    rl.DrawLine(tab_x - SETTINGS_TAB_GAP, content_y, content_border_x + content_border_w, content_y, border_color)
-
-    # Content area layout (from config)
-    item_h = SETTINGS_CONTENT_ITEM_HEIGHT
-    padding_x = SETTINGS_CONTENT_PADDING_X
-    sub_item_padding = SETTINGS_CONTENT_SUB_INDENT
-    val_w = SETTINGS_CONTENT_VALUE_WIDTH
-    val_x = win_x + win_w - val_w - SETTINGS_CONTENT_VALUE_MARGIN
-
-    # Clip content area
-    rl.BeginScissorMode(win_x + SETTINGS_CONTENT_BORDER_MARGIN + 1, content_y + 1,
-                        win_w - SETTINGS_CONTENT_BORDER_MARGIN * 2 - 2, content_h - 2)
-
-    current_tab = SETTINGS_TABS[settings.active_tab]
-    tab_items = current_tab["items"]
-    item_y = content_y + 5 - settings.scroll_offset
-    editable_idx = 0
-
-    for item in tab_items:
-        label, config_key, val_type, min_val, max_val = item
-
-        # Skip items outside visible area
-        if item_y + item_h < content_y or item_y > content_y + content_h:
-            if config_key is not None:
-                editable_idx += 1
-            item_y += item_h
-            continue
-
-        if config_key is None:
-            # Section header - no background, just text with different color
-            _draw_settings_text(state, label, win_x + padding_x, item_y + (item_h - small_font) // 2,
-                              small_font, colors["header_text"])
-        else:
-            # Config item with extra indent
-            current_val = getattr(cfg, config_key, "?")
-            is_editing = (settings.editing_item == editable_idx)
-
-            # Check if value is out of range
-            is_out_of_range = False
-            try:
-                val = val_type(current_val) if val_type else current_val
-                if min_val is not None and val < min_val:
-                    is_out_of_range = True
-                if max_val is not None and val > max_val:
-                    is_out_of_range = True
-            except (ValueError, TypeError):
-                pass
-
-            # Draw label with extra indent for sub-items
-            label_x = win_x + padding_x + sub_item_padding
-            _draw_settings_text(state, label, label_x, item_y + (item_h - small_font) // 2,
-                              small_font, colors["text_color"])
-
-            # Input field area
-            field_x = val_x - 5
-            field_w = val_w + 10
-            field_y = item_y + 4
-            field_h = item_h - 8
-
-            if is_editing:
-                # Active editing field
-                rl.DrawRectangle(field_x, field_y, field_w, field_h, RL_Color(*colors["input_active_bg"]))
-                rl.DrawRectangleLines(field_x, field_y, field_w, field_h, RL_Color(*colors["input_active_border"]))
-
-                edit = settings.edit_state
-                text = edit.text
-
-                # Check if editing value is out of range
-                edit_out_of_range = False
-                try:
-                    if text.strip():
-                        test_val = val_type(text) if val_type else text
-                        if min_val is not None and test_val < min_val:
-                            edit_out_of_range = True
-                        if max_val is not None and test_val > max_val:
-                            edit_out_of_range = True
-                except (ValueError, TypeError):
-                    edit_out_of_range = True
-
-                # Draw selection background if any
-                if edit.has_selection():
-                    sel_start, sel_end = edit.get_selection_range()
-                    text_before_sel = text[:sel_start]
-                    text_sel = text[sel_start:sel_end]
-
-                    start_x = val_x
-                    if state.unicode_font and text_before_sel:
-                        start_offset = rl.MeasureTextEx(state.unicode_font, text_before_sel.encode('utf-8'),
-                                                        small_font, 1.0).x
-                        start_x += int(start_offset)
-
-                    if state.unicode_font and text_sel:
-                        sel_width = rl.MeasureTextEx(state.unicode_font, text_sel.encode('utf-8'),
-                                                     small_font, 1.0).x
-                    else:
-                        sel_width = len(text_sel) * (small_font // 2)
-
-                    rl.DrawRectangle(start_x, field_y + 2, int(sel_width), field_h - 4,
-                                    RL_Color(*colors["selection_bg"]))
-
-                # Draw text - red if out of range
-                text_color = (200, 60, 60, 255) if edit_out_of_range else colors["input_text"]
-                _draw_settings_text(state, text, val_x, item_y + (item_h - small_font) // 2,
-                                  small_font, text_color)
-
-                # Draw cursor
-                if int(now() * 2) % 2 == 0:
-                    text_before_cursor = text[:edit.cursor_pos]
-                    cursor_x = val_x
-                    if state.unicode_font and text_before_cursor:
-                        cursor_offset = rl.MeasureTextEx(state.unicode_font, text_before_cursor.encode('utf-8'),
-                                                         small_font, 1.0).x
-                        cursor_x += int(cursor_offset)
-                    rl.DrawRectangle(cursor_x, field_y + 4, 2, field_h - 8,
-                                    RL_Color(*colors["input_text"]))
-            else:
-                # Normal field with hover effect
-                is_hover = (field_x <= mouse.x <= field_x + field_w and
-                           field_y <= mouse.y <= field_y + field_h)
-                if is_hover:
-                    rl.DrawRectangle(field_x, field_y, field_w, field_h, RL_Color(*colors["hover_bg"]))
-                else:
-                    rl.DrawRectangle(field_x, field_y, field_w, field_h, RL_Color(*colors["input_bg"]))
-                rl.DrawRectangleLines(field_x, field_y, field_w, field_h, RL_Color(*colors["input_border"]))
-
-                val_str = str(current_val)
-                # Use red color if value is out of range
-                val_color = (200, 60, 60, 255) if is_out_of_range else colors["value_color"]
-                _draw_settings_text(state, val_str, val_x, item_y + (item_h - small_font) // 2,
-                                  small_font, val_color)
-
-            editable_idx += 1
-
-        item_y += item_h
-
-    rl.EndScissorMode()
-
-    # Scroll indicators
-    max_scroll = max(0, len(tab_items) * item_h - content_h)
-    if max_scroll > 0:
-        scroll_bar_h = max(20, content_h * content_h // (len(tab_items) * item_h))
-        scroll_bar_y = content_y + (settings.scroll_offset / max_scroll) * (content_h - scroll_bar_h)
-        rl.DrawRectangle(win_x + win_w - 12, int(scroll_bar_y), 4, int(scroll_bar_h),
-                        RL_Color(*colors["input_border"]))
-
-    # Footer hints
-    hint_y = win_y + win_h - 35
-    if settings.editing_item >= 0:
-        hints = [("Enter", "сохранить"), ("Esc", "отмена"), ("Tab", "след. поле"),
-                ("Home/End", "начало/конец"), ("Shift+←→", "выделение")]
-    else:
-        hints = [("Клик", "редактировать"), ("Esc", "закрыть"), ("Колесо", "прокрутка")]
-
-    hint_x = win_x + SETTINGS_TAB_START_X
-    for key, desc in hints:
-        hint_text = f"{key}: {desc}"
-        _draw_settings_text(state, hint_text, hint_x, hint_y, small_font - 2, colors["hint_color"])
-        if state.unicode_font:
-            text_width = rl.MeasureTextEx(state.unicode_font, hint_text.encode('utf-8'),
-                                          small_font - 2, 1.0).x
-        else:
-            text_width = len(hint_text) * ((small_font - 2) // 2)
-        hint_x += int(text_width) + 20
-        if hint_x > win_x + win_w - 100:
-            break
-
-
-def _get_tab_positions(state: AppState, win_x: int, small_font: int) -> list:
-    """Calculate tab positions and widths based on text content. Uses config constants."""
-    tab_positions = []
-    tab_x = win_x + SETTINGS_TAB_START_X
-
-    for tab in SETTINGS_TABS:
-        if state.unicode_font:
-            tw = rl.MeasureTextEx(state.unicode_font, tab["name"].encode('utf-8'), small_font, 1.0).x
-        else:
-            tw = len(tab["name"]) * (small_font // 2)
-        tab_w = int(tw) + SETTINGS_TAB_PADDING * 2
-        tab_positions.append((tab_x, tab_w))
-        tab_x += tab_w + SETTINGS_TAB_GAP
-
-    return tab_positions
-
-
-def _draw_settings_text(state: AppState, text: str, x: int, y: int, size: int, color: tuple):
-    """Helper to draw text with unicode support."""
-    color_rl = RL_Color(*color)
-    if state.unicode_font:
-        try:
-            rl.DrawTextEx(state.unicode_font, text.encode('utf-8'),
-                         RL_V2(x, y), size, 1.0, color_rl)
-            return
-        except Exception:
-            pass
-    RL_DrawText(text, x, y, size, color_rl)
-
-
-def delete_to_recycle_bin(file_path: str) -> bool:
+def apply_runtime_config_change(config_key: str, state: Optional[AppState]) -> None:
+    if config_key in {"FULL_IMAGE_CACHE_MAX_MB", "FULL_IMAGE_CACHE_MAX_ITEMS"}:
+        protected_ids = _active_texture_ids(state) if state is not None else set()
+        evicted = _LARGE_TEXTURE_CACHE.configure(
+            max_mb=cfg.FULL_IMAGE_CACHE_MAX_MB,
+            max_items=cfg.FULL_IMAGE_CACHE_MAX_ITEMS,
+            protected_texture_ids=protected_ids,
+        )
+        if state is not None:
+            for texture in evicted:
+                _TEXTURE_MANAGER.defer_unload(state, texture)
+    elif config_key in {"ANIMATED_CONTENT_CACHE_MAX_MB", "ANIMATED_CONTENT_CACHE_MAX_ITEMS"}:
+        _ANIMATED_CONTENT_CACHE.configure(
+            max_mb=cfg.ANIMATED_CONTENT_CACHE_MAX_MB,
+            max_items=cfg.ANIMATED_CONTENT_CACHE_MAX_ITEMS,
+        )
+    elif config_key == "BLUR_ENABLED":
+        # Force apply_bg_mode to re-evaluate blur on the next frame.
+        global _current_blur_enabled
+        _current_blur_enabled = None
+
+
+def _mirror_config_global(config_key: str) -> None:
+    """Mirror a config value into imagura2's own module globals (test contract)."""
+    if config_key in globals():
+        globals()[config_key] = getattr(cfg, config_key)
+
+
+def save_config_value(config_key: str, value, val_type: type, state: Optional[AppState] = None) -> bool:
+    """Save a single config value, then mirror it into imagura2's module globals.
+
+    Delegates persistence to settings_persistence.save_config_value_impl and runs
+    apply_runtime_config_change (cache reconfig) after a successful save, matching
+    the original ordering (set config -> persist -> reconfigure caches).
     """
-    Delete a file to the Windows recycle bin.
+    ok = _save_config_value_impl(
+        config_key, value, val_type, state, on_applied=apply_runtime_config_change
+    )
+    if ok:
+        _mirror_config_global(config_key)
+    return ok
 
-    Uses SHFileOperationW from shell32.dll.
-    Returns True if successful, False otherwise.
-    """
-    if sys.platform != 'win32':
-        log(f"[DELETE] Recycle bin not supported on {sys.platform}")
-        return False
 
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        # SHFILEOPSTRUCTW structure
-        class SHFILEOPSTRUCTW(ctypes.Structure):
-            _fields_ = [
-                ("hwnd", wintypes.HWND),
-                ("wFunc", wintypes.UINT),
-                ("pFrom", wintypes.LPCWSTR),
-                ("pTo", wintypes.LPCWSTR),
-                ("fFlags", wintypes.WORD),
-                ("fAnyOperationsAborted", wintypes.BOOL),
-                ("hNameMappings", ctypes.c_void_p),
-                ("lpszProgressTitle", wintypes.LPCWSTR),
-            ]
-
-        # Constants
-        FO_DELETE = 3
-        FOF_ALLOWUNDO = 0x0040  # Send to recycle bin
-        FOF_NOCONFIRMATION = 0x0010  # No confirmation dialog
-        FOF_SILENT = 0x0004  # No progress dialog
-
-        shell32 = ctypes.windll.shell32
-
-        # Path must be double-null terminated
-        path_double_null = file_path + '\0\0'
-
-        file_op = SHFILEOPSTRUCTW()
-        file_op.hwnd = None
-        file_op.wFunc = FO_DELETE
-        file_op.pFrom = path_double_null
-        file_op.pTo = None
-        file_op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
-        file_op.fAnyOperationsAborted = False
-        file_op.hNameMappings = None
-        file_op.lpszProgressTitle = None
-
-        result = shell32.SHFileOperationW(ctypes.byref(file_op))
-
-        if result == 0 and not file_op.fAnyOperationsAborted:
-            log(f"[DELETE] Sent to recycle bin: {os.path.basename(file_path)}")
-            return True
-        else:
-            log(f"[DELETE][ERR] SHFileOperationW failed: {result}")
-            return False
-
-    except Exception as e:
-        log(f"[DELETE][ERR] Failed to delete: {e!r}")
-        return False
+def apply_saved_settings(state: Optional[AppState] = None) -> None:
+    """Load persisted settings, then mirror applied values into imagura2 globals."""
+    _apply_saved_settings_impl(state, on_applied=apply_runtime_config_change)
+    for config_key in settings_definitions():
+        _mirror_config_global(config_key)
 
 
 def delete_current_image(state: AppState) -> bool:
     """
-    Delete the current image to recycle bin and navigate to next/prev.
+    Delete the current image to platform trash and navigate to next/prev.
     Returns True if successful.
     """
     if state.index >= len(state.current_dir_images):
@@ -2272,8 +970,12 @@ def delete_current_image(state: AppState) -> bool:
     old_index = state.index
 
     # First delete the file
-    if not delete_to_recycle_bin(path):
+    if not delete_to_trash(path):
         return False
+
+    # Cleanup playback before unloading textures
+    _ANIMATED_PLAYBACK.stop(state)
+    drop_cached_path(state, path)
 
     # Unload all cached textures (curr, prev, next) since indices shift
     for ti in (state.cache.curr, state.cache.prev, state.cache.next):
@@ -2331,6 +1033,7 @@ def reload_current_image(state: AppState):
 
     path = state.current_dir_images[state.index]
     log(f"[TRANSFORM] Reloading image: {os.path.basename(path)}")
+    drop_cached_path(state, path)
 
     # Unload current texture
     if state.cache.curr:
@@ -2358,434 +1061,284 @@ def reload_current_image(state: AppState):
     preload_neighbors(state, state.index, skip_neighbors=True)
 
 
-def schedule_thumbs(state: AppState, around_index: int):
-    n = len(state.current_dir_images)
-    if n == 0:
-        return
-    lo = max(0, around_index - THUMB_PRELOAD_SPAN)
-    hi = min(n - 1, around_index + THUMB_PRELOAD_SPAN)
-    inq = set(state.thumb_queue)
-    for i in range(lo, hi + 1):
-        p = state.current_dir_images[i]
-        if (p not in state.thumb_cache) and (p not in inq):
-            state.thumb_queue.append(p)
-            inq.add(p)
+def invalidate_cached_path(state: AppState, path: str) -> None:
+    """Drop stale textures/thumbs for a file changed outside the normal loader path."""
+    drop_cached_path(state, path)
 
+    for cache_attr in ("prev", "curr", "next"):
+        ti = getattr(state.cache, cache_attr)
+        if ti and ti.path == path:
+            unload_texture_deferred(state, ti)
+            setattr(state.cache, cache_attr, None)
 
-def build_thumb_from_image(img, target_h: int, src_path: str) -> BitmapThumb:
-    try:
-        w, h = img.width, img.height
-        if w <= 0 or h <= 0:
-            return BitmapThumb(None, (0, 0), src_path, False)
-
-        scale = target_h / h
-        tw, th = max(1, int(w * scale)), target_h
-        rimg = _image_resize_mut(img, tw, th)
-
-        tex = rl.LoadTextureFromImage(rimg)
-        try:
-            rl.UnloadImage(rimg)
-        except Exception:
-            pass
-
-        return BitmapThumb(tex, (tw, th), src_path, True)
-    except Exception as e:
-        log(f"[THUMB][ERR] {os.path.basename(src_path)}: {e!r}")
-        return BitmapThumb(None, (0, 0), src_path, False)
-
-
-def get_gallery_height(screen_h: int) -> int:
-    """Calculate gallery height with minimum constraint."""
-    return max(int(screen_h * GALLERY_HEIGHT_FRAC), GALLERY_MIN_HEIGHT_PX)
-
-
-def process_thumb_queue(state: AppState):
-    target_h = int(get_gallery_height(state.screenH) * 0.8)
-    budget = THUMB_BUILD_BUDGET_PER_FRAME
-
-    while budget > 0 and state.thumb_queue:
-        p = state.thumb_queue.popleft()
-        if p in state.thumb_cache:
-            continue
-
-        state.thumb_cache[p] = BitmapThumb(None, (0, 0), p, False)
-
-        def on_thumb_loaded(path: str, img, error: Optional[Exception]):
-            if error:
-                log(f"[THUMB][ERR] {os.path.basename(path)}: {error!r}")
-                state.thumb_cache[path] = BitmapThumb(None, (0, 0), path, False)
-                return
-
-            try:
-                thumb = build_thumb_from_image(img, target_h, path)
-                state.thumb_cache[path] = thumb
-            except Exception as e:
-                log(f"[THUMB][ERR] Failed to create texture: {e!r}")
-                state.thumb_cache[path] = BitmapThumb(None, (0, 0), path, False)
-
-        state.async_loader.submit(p, LoadPriority.GALLERY, on_thumb_loaded)
-        budget -= 1
-
-    while len(state.thumb_cache) > THUMB_CACHE_LIMIT:
-        _, bt = state.thumb_cache.popitem(last=False)
-        if bt and bt.texture:
+    if path in state.thumb_cache:
+        bt = state.thumb_cache.pop(path)
+        if bt.texture:
             try:
                 rl.UnloadTexture(bt.texture)
             except Exception:
                 pass
 
+    if path not in state.thumb_queue:
+        state.thumb_queue.append(path)
+
+
+def run_transform_async(state: AppState, transform_func, path: str, **kwargs):
+    """Run an image transform in a background thread with spinner."""
+    if state.transforming:
+        return
+    state.transforming = True
+
+    def worker():
+        success = False
+        try:
+            success = transform_func(path, **kwargs)
+        except Exception as e:
+            log(f"[TRANSFORM] Error: {e}")
+
+        def on_done(st, transformed_path=path, ok=success):
+            st.transforming = False
+            if ok:
+                current_path = None
+                if st.index < len(st.current_dir_images):
+                    current_path = st.current_dir_images[st.index]
+                if current_path == transformed_path:
+                    reload_current_image(st)
+                else:
+                    invalidate_cached_path(st, transformed_path)
+
+        state.async_loader.push_ui_event(on_done, (state,))
+
+    t = Thread(target=worker, daemon=True)
+    t.start()
+
+
+def schedule_thumbs(state: AppState, around_index: int):
+    _THUMBNAIL_SERVICE.schedule_around(state, around_index)
+
+
+def get_gallery_height(screen_h: int) -> int:
+    """Calculate gallery height with minimum constraint."""
+    return _THUMBNAIL_SERVICE.gallery_height(screen_h)
+
+
+def process_thumb_queue(state: AppState):
+    _THUMBNAIL_SERVICE.process_queue(state)
+
 
 def update_gallery_scroll(state: AppState):
-    if state.gallery_target_index is not None:
-        target = float(clamp(state.gallery_target_index, 0, max(0, len(state.current_dir_images) - 1)))
-    else:
-        target = float(state.index)
-
-    current = state.gallery_center_index
-    diff = target - current
-
-    if abs(diff) < 0.01:
-        state.gallery_center_index = target
-        return
-
-    speed = 0.25
-    state.gallery_center_index += diff * speed
+    _GALLERY_BEHAVIOR.update_scroll(state, rl.GetFrameTime())
 
 
 def reconcile_gallery_target(state: AppState):
-    tgt = state.gallery_target_index
-    if tgt is None:
-        return
-
-    if (now() - state.gallery_last_wheel_time) < GALLERY_SETTLE_DEBOUNCE_S:
-        return
-
-    if state.switch_anim_active or state.waiting_for_switch or state.loading_current:
-        return
-
-    n = len(state.current_dir_images)
-    if n == 0:
-        state.gallery_target_index = None
-        return
-    tgt = clamp(int(tgt), 0, n - 1)
-
-    if state.index == tgt:
-        state.gallery_target_index = None
-        return
-
-    step = 1 if tgt > state.index else -1
-    switch_to(state, state.index + step, animate=True, anim_duration_ms=ANIM_SWITCH_GALLERY_MS)
+    _GALLERY_BEHAVIOR.reconcile_target(
+        state,
+        now(),
+        lambda idx, animate, duration_ms: switch_to(state, idx, animate=animate, anim_duration_ms=duration_ms),
+    )
 
 
 def update_gallery_visibility_and_slide(state: AppState):
     mouse = rl.GetMousePosition()
-    gh = get_gallery_height(state.screenH)
-    y_hidden = state.screenH
-    y_visible = state.screenH - gh
-    in_trigger = (mouse.y >= state.screenH * (1.0 - GALLERY_TRIGGER_FRAC))
-    # Check if mouse is in the current gallery panel area (based on current position)
-    current_panel_top = state.gallery_y
-    in_panel = (current_panel_top <= mouse.y <= y_hidden) and state.gallery_y < y_hidden
-    want_show = in_trigger or in_panel
-    state.gallery_visible = want_show
-    cur = state.gallery_y
-    tgt = y_visible if want_show else y_hidden
-    slide_ms = cfg.GALLERY_SLIDE_MS  # Use cfg to get live value from settings
-    if slide_ms <= 0:
-        # Instant transition when slide time is 0
-        state.gallery_y = tgt
-    else:
-        # Use real delta time for smooth animation
-        dt = rl.GetFrameTime()
-        speed = gh / (slide_ms / 1000.0)  # pixels per second
-        step = speed * dt
-        if abs(cur - tgt) <= step:
-            state.gallery_y = tgt
-        else:
-            state.gallery_y = cur - step if cur > tgt else cur + step
+    _GALLERY_BEHAVIOR.update_visibility_and_slide(
+        state,
+        mouse.y,
+        rl.GetFrameTime(),
+        get_gallery_height(state.screenH),
+        force_visible=state.gallery.sort_menu_open,
+    )
 
 
 def is_mouse_over_gallery(state: AppState) -> bool:
     mouse = rl.GetMousePosition()
-    gh = get_gallery_height(state.screenH)
-    y_visible = state.screenH - gh
-    return y_visible <= mouse.y <= state.screenH and state.gallery_y < state.screenH
+    return _GALLERY_BEHAVIOR.is_mouse_over(state, mouse.y, get_gallery_height(state.screenH))
 
 
 def render_gallery(state: AppState):
-    n = len(state.current_dir_images)
-    if n == 0:
-        return
-
-    sw, sh = state.screenW, state.screenH
-    gh = get_gallery_height(sh)
-    y_hidden = sh
-    y_visible = sh - gh
-    # Don't overwrite state.gallery_y - just clamp for drawing
-    y = int(clamp(state.gallery_y, y_visible, y_hidden))
-
-    denom = y_hidden - y_visible
-    alpha_panel = 1.0 - ((state.gallery_y - y_visible) / denom) if denom > 0 else 1.0
-    rl.DrawRectangle(0, y, sw, gh, RL_Color(0, 0, 0, int(255 * 0.6 * alpha_panel)))
-
     mouse = rl.GetMousePosition()
-    center_x = sw // 2
-    base_thumb_h = int(gh * 0.8)
+    left_clicked = rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)
+    gallery_height = get_gallery_height(state.screenH)
+    sort_result = handle_gallery_sort_input(state, mouse.x, mouse.y, left_clicked, gallery_height)
+    if sort_result.changed:
+        apply_gallery_sort(state)
 
-    visible_range = 10
-    start_idx = max(0, int(state.gallery_center_index) - visible_range)
-    end_idx = min(n - 1, int(state.gallery_center_index) + visible_range)
+    clicked_index = _GALLERY_RENDERER.render(
+        state,
+        mouse.x,
+        mouse.y,
+        left_clicked and not sort_result.consumed_click,
+        gallery_height,
+    )
+    draw_gallery_sort_control(state, gallery_height)
+    return clicked_index
 
-    thumb_positions = {}
 
-    center_idx = int(state.gallery_center_index)
-    thumb_positions[center_idx] = 0.0
+def apply_gallery_sort(state: AppState) -> None:
+    current_path = state.current_dir_images[state.index] if state.index < len(state.current_dir_images) else None
+    sorted_paths, new_index = resort_preserving_current(
+        state.current_dir_images,
+        current_path,
+        state.gallery.sort_key,
+        state.gallery.sort_desc,
+    )
+    state.current_dir_images = sorted_paths
+    state.index = new_index
+    state.gallery_target_index = None
+    state.gallery_center_index = float(new_index)
+    for ti in (state.cache.prev, state.cache.next):
+        unload_texture_deferred(state, ti)
+    state.cache.prev = None
+    state.cache.next = None
+    state.thumb_queue.clear()
+    schedule_thumbs(state, new_index)
 
-    # Helper to get scaled width for a thumbnail
-    def get_thumb_width(bt, distance_scale):
-        if bt and bt.ready and bt.texture and bt.size[1] > 0:
-            # Scale to fit current gallery height, then apply distance scale
-            fit_scale = base_thumb_h / bt.size[1]
-            return int(bt.size[0] * fit_scale * distance_scale)
-        else:
-            return int(base_thumb_h * 1.4 * distance_scale)
 
-    cumulative_offset = 0.0
-    for idx in range(center_idx - 1, start_idx - 1, -1):
-        p = state.current_dir_images[idx]
-        bt = state.thumb_cache.get(p)
+def sorted_supported_files_for_state(state: AppState, dirpath: str) -> list[str]:
+    return sort_image_paths(list_supported_files(dirpath), state.gallery.sort_key, state.gallery.sort_desc)
 
-        distance = abs(idx - state.gallery_center_index)
-        scale_factor = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, distance / visible_range))
-        w_curr = get_thumb_width(bt, scale_factor)
 
-        next_idx = idx + 1
-        next_p = state.current_dir_images[next_idx]
-        next_bt = state.thumb_cache.get(next_p)
-        next_distance = abs(next_idx - state.gallery_center_index)
-        next_scale = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, next_distance / visible_range))
-        w_next = get_thumb_width(next_bt, next_scale)
+def scan_start_images(state: AppState, start_path: Optional[str]) -> tuple[str, list[str], int]:
+    """Resolve the startup directory, sorted images, and initial index."""
+    if start_path and os.path.isdir(start_path):
+        dirpath = start_path
+        images = sorted_supported_files_for_state(state, dirpath)
+        return dirpath, images, 0
 
-        cumulative_offset -= (w_curr / 2.0 + GALLERY_THUMB_SPACING + w_next / 2.0)
-        thumb_positions[idx] = cumulative_offset
+    dirpath = os.path.dirname(start_path) if start_path else os.getcwd()
+    images = sorted_supported_files_for_state(state, dirpath)
+    if not start_path:
+        return dirpath, images, 0
 
-    cumulative_offset = 0.0
-    for idx in range(center_idx + 1, end_idx + 1):
-        p = state.current_dir_images[idx]
-        bt = state.thumb_cache.get(p)
+    try:
+        start_index = images.index(os.path.join(dirpath, os.path.basename(start_path)))
+    except ValueError:
+        start_index = 0
+    return dirpath, images, start_index
 
-        distance = abs(idx - state.gallery_center_index)
-        scale_factor = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, distance / visible_range))
-        w_curr = get_thumb_width(bt, scale_factor)
 
-        prev_idx = idx - 1
-        prev_p = state.current_dir_images[prev_idx]
-        prev_bt = state.thumb_cache.get(prev_p)
-        prev_distance = abs(prev_idx - state.gallery_center_index)
-        prev_scale = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, prev_distance / visible_range))
-        w_prev = get_thumb_width(prev_bt, prev_scale)
+def prompt_for_start_image(state: AppState, initial_dir: str) -> Optional[str]:
+    selected = open_image_file_dialog(state.hwnd, initial_dir)
+    if selected and os.path.exists(selected):
+        log(f"[DIALOG] Selected start image: {selected}")
+        return selected
+    log("[DIALOG] No image selected")
+    return None
 
-        cumulative_offset += (w_prev / 2.0 + GALLERY_THUMB_SPACING + w_curr / 2.0)
-        thumb_positions[idx] = cumulative_offset
 
-    center_frac = state.gallery_center_index - int(state.gallery_center_index)
-    center_int = int(state.gallery_center_index)
-    offset_adjust = 0.0
-    if center_frac > 0 and center_int + 1 in thumb_positions and center_int in thumb_positions:
-        offset_adjust = lerp(thumb_positions[center_int], thumb_positions[center_int + 1], center_frac)
+def _no_images_button_rects(state: AppState) -> tuple[tuple[int, int, int, int], tuple[int, int, int, int]]:
+    button_w = 170
+    button_h = 40
+    gap = 14
+    total_w = button_w * 2 + gap
+    x = (state.screenW - total_w) // 2
+    y = state.screenH // 2 + 64
+    return (x, y, button_w, button_h), (x + button_w + gap, y, button_w, button_h)
 
-    for idx in range(start_idx, end_idx + 1):
-        if idx not in thumb_positions:
-            continue
 
-        p = state.current_dir_images[idx]
-        bt = state.thumb_cache.get(p)
+def _point_in_rect(x: float, y: float, rect: tuple[int, int, int, int]) -> bool:
+    rx, ry, rw, rh = rect
+    return rx <= x <= rx + rw and ry <= y <= ry + rh
 
-        distance = abs(idx - state.gallery_center_index)
-        scale_factor = lerp(1.0, GALLERY_MIN_SCALE, min(1.0, distance / visible_range))
-        alpha_factor = lerp(1.0, GALLERY_MIN_ALPHA, min(1.0, distance / visible_range))
 
-        if bt and bt.ready and bt.texture and getattr(bt.texture, 'id', 0) and bt.size[1] > 0:
-            # Scale to fit current gallery height, then apply distance scale
-            fit_scale = base_thumb_h / bt.size[1]
-            total_scale = fit_scale * scale_factor
-            scaled_w = int(bt.size[0] * total_scale)
-            scaled_h = int(bt.size[1] * total_scale)
+def _measure_ui_text(text: str, font_size: int) -> int:
+    try:
+        return int(rl.MeasureText(text, font_size))
+    except TypeError:
+        return int(rl.MeasureText(text.encode("utf-8"), font_size))
 
-            thumb_center_x = center_x + int(thumb_positions[idx] - offset_adjust)
-            thumb_x = thumb_center_x - scaled_w // 2
-            thumb_y = y + (gh - scaled_h) // 2
 
-            is_hover = (thumb_x <= mouse.x <= thumb_x + scaled_w) and (thumb_y <= mouse.y <= thumb_y + scaled_h)
-            final_alpha = 1.0 if is_hover else alpha_factor
+def _draw_no_images_button(rect: tuple[int, int, int, int], label: str, hovered: bool) -> None:
+    x, y, w, h = rect
+    bg = RL_Color(255, 255, 255, 58 if hovered else 38)
+    border = RL_Color(255, 255, 255, 210 if hovered else 150)
+    text_color = RL_Color(255, 255, 255, 235)
+    rl.DrawRectangle(x, y, w, h, bg)
+    rl.DrawRectangleLines(x, y, w, h, border)
+    font_size = 18
+    tw = _measure_ui_text(label, font_size)
+    RL_DrawText(label, x + (w - tw) // 2, y + (h - font_size) // 2, font_size, text_color)
 
-            try:
-                src_rect = RL_Rect(0, 0, bt.size[0], bt.size[1])
-                dst_rect = RL_Rect(thumb_x, thumb_y, scaled_w, scaled_h)
-                tint = RL_Color(255, 255, 255, int(255 * final_alpha * alpha_panel))
-                rl.DrawTexturePro(bt.texture, src_rect, dst_rect, RL_V2(0, 0), 0.0, tint)
-            except Exception as e:
-                log(f"[DRAW][THUMB][ERR] {os.path.basename(p)}: {e!r}")
 
-            if idx == state.index:
-                rl.DrawRectangleLines(thumb_x - 2, thumb_y - 2, scaled_w + 4, scaled_h + 4,
-                                      RL_Color(255, 255, 255, int(255 * alpha_panel)))
+def draw_no_images_screen(state: AppState, dirpath: str, mouse_x: float, mouse_y: float) -> None:
+    from imagura.i18n import tr
+    title = tr("empty.no_images")
+    path_text = dirpath
+    if len(path_text) > 96:
+        path_text = f"{path_text[:42]}...{path_text[-51:]}"
+    hint = tr("empty.hint")
 
-            if is_hover and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-                switch_to(state, idx)
-        else:
-            scaled_w = int(base_thumb_h * 1.4 * scale_factor)
-            scaled_h = int(base_thumb_h * scale_factor)
-            thumb_center_x = center_x + int(thumb_positions[idx] - offset_adjust)
-            thumb_x = thumb_center_x - scaled_w // 2
-            thumb_y = y + (gh - scaled_h) // 2
+    title_size = 30
+    path_size = 18
+    hint_size = 17
+    center_x = state.screenW // 2
+    base_y = state.screenH // 2 - 64
 
-            rl.DrawRectangle(thumb_x, thumb_y, scaled_w, scaled_h,
-                             RL_Color(64, 64, 64, int(255 * alpha_factor * alpha_panel)))
+    title_w = _measure_ui_text(title, title_size)
+    path_w = _measure_ui_text(path_text, path_size)
+    hint_w = _measure_ui_text(hint, hint_size)
+
+    RL_DrawText(title, center_x - title_w // 2, base_y, title_size, RL_Color(255, 255, 255, 230))
+    RL_DrawText(path_text, center_x - path_w // 2, base_y + 44, path_size, RL_Color(210, 210, 210, 210))
+    RL_DrawText(hint, center_x - hint_w // 2, base_y + 76, hint_size, RL_Color(190, 190, 190, 190))
+
+    open_rect, exit_rect = _no_images_button_rects(state)
+    _draw_no_images_button(open_rect, tr("empty.open"), _point_in_rect(mouse_x, mouse_y, open_rect))
+    _draw_no_images_button(exit_rect, tr("empty.exit"), _point_in_rect(mouse_x, mouse_y, exit_rect))
+
+
+def run_no_images_screen(state: AppState, dirpath: str) -> Optional[str]:
+    """Show an interactive empty-state screen.
+
+    Returns a selected image path when the user chooses one, or None when the
+    window should close.
+    """
+    while not rl.WindowShouldClose():
+        update_close_button_alpha(state)
+        update_toolbar_alpha_ui(state)
+
+        settings_active = state.ui.settings.visible
+        if settings_active:
+            handle_settings_input(state)
+
+        mouse = rl.GetMousePosition()
+        open_rect, exit_rect = _no_images_button_rects(state)
+        left_clicked = rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)
+
+        toolbar_clicked_button = update_toolbar_input(state, mouse, settings_active)
+        toolbar_consumed_click = toolbar_clicked_button is not None
+        if toolbar_clicked_button is not None:
+            if toolbar_clicked_button.id == ToolbarButtonId.SETTINGS:
+                state.ui.settings.show()
+            else:
+                log(f"[TOOLBAR] Ignored without current image: {toolbar_clicked_button.tooltip}")
+
+        if not settings_active:
+            if rl.IsKeyPressed(KEY_CLOSE):
+                return None
+            if not toolbar_consumed_click and check_close_button_click(state):
+                return None
+            if left_clicked and not toolbar_consumed_click:
+                if _point_in_rect(mouse.x, mouse.y, open_rect):
+                    selected = prompt_for_start_image(state, dirpath)
+                    if selected:
+                        return selected
+                elif _point_in_rect(mouse.x, mouse.y, exit_rect):
+                    return None
+
+        rl.BeginDrawing()
+        apply_bg_mode(state)
+        draw_no_images_screen(state, dirpath, mouse.x, mouse.y)
+        draw_close_button(state)
+        draw_toolbar_ui(state)
+        draw_settings_window(state)
+        rl.EndDrawing()
+        increment_frame()
+
+    return None
 
 
 def preload_neighbors(state: AppState, new_index: int, skip_neighbors: bool = False):
-    n = len(state.current_dir_images)
-    if n == 0:
-        return
-    new_index = clamp(new_index, 0, n - 1)
-
-    current_path = state.current_dir_images[new_index]
-    old_index = state.index
-    state.index = new_index
-
-    is_heavy = is_heavy_image(current_path)
-
-    log(f"[PRELOAD] Starting async load for index={new_index} path={os.path.basename(current_path)} heavy={is_heavy} skip_neighbors={skip_neighbors}")
-
-    def _is_texture_in_use(ti: Optional[TextureInfo]) -> bool:
-        """Check if texture is still referenced by animation snapshots."""
-        if not ti:
-            return False
-        tex = getattr(ti, 'tex', None)
-        if not tex:
-            return False
-        for ref in (state.waiting_prev_snapshot, state.switch_anim_prev_tex):
-            if ref and getattr(ref, 'tex', None) is tex:
-                return True
-        return False
-
-    def on_current_loaded(path: str, img, error: Optional[Exception]):
-        if error:
-            log(f"[ASYNC][CURRENT][ERR] {os.path.basename(path)}: {error!r}")
-            state.loading_current = False
-            try:
-                if state.cache.curr and not _is_texture_in_use(state.cache.curr):
-                    unload_texture_deferred(state, state.cache.curr)
-                ph = rl.GenImageColor(2, 2, _RL_WHITE)
-                tex = rl.LoadTextureFromImage(ph)
-                rl.UnloadImage(ph)
-                state.cache.curr = TextureInfo(tex=tex, w=2, h=2, path=path)
-            except Exception:
-                pass
-            return
-
-        try:
-            if state.cache.curr and not _is_texture_in_use(state.cache.curr):
-                unload_texture_deferred(state, state.cache.curr)
-            state.cache.curr = image_to_textureinfo(img, path)
-            state.loading_current = False
-            state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
-
-            if path in state.view_memory:
-                restored_view = state.view_memory[path]
-                state.view = sanitize_view(state, restored_view, state.cache.curr)
-                log(f"[ASYNC][CURRENT] Restored view: scale={state.view.scale:.3f} off=({state.view.offx:.1f},{state.view.offy:.1f})")
-
-                state.is_zoomed = (state.view.scale > state.last_fit_view.scale)
-                if abs(state.view.scale - 1.0) < 0.01:
-                    state.zoom_state_cycle = 0
-                elif abs(state.view.scale - state.last_fit_view.scale) < 0.01:
-                    state.zoom_state_cycle = 1
-                else:
-                    state.zoom_state_cycle = 2
-            else:
-                state.view = state.last_fit_view
-                state.is_zoomed = False
-                state.zoom_state_cycle = 1
-                log(f"[ASYNC][CURRENT] New view (FIT): scale={state.view.scale:.3f} off=({state.view.offx:.1f},{state.view.offy:.1f})")
-
-            log(f"[ASYNC][CURRENT] Loaded: {os.path.basename(path)} tex_id={getattr(state.cache.curr.tex, 'id', 0)}")
-
-            if state.waiting_for_switch and state.pending_target_index is not None:
-                log(f"[SWITCH_ANIM] About to start: pending_duration={state.pending_switch_duration_ms}ms waiting={state.waiting_for_switch} target={state.pending_target_index}")
-                direction = 1 if new_index > old_index else -1
-                if state.waiting_prev_snapshot:
-                    state.switch_anim_prev_tex = state.waiting_prev_snapshot
-                    state.switch_anim_prev_view = state.waiting_prev_view
-                    state.switch_anim_active = True
-                    state.switch_anim_t0 = now()
-                    state.switch_anim_direction = direction
-                    state.switch_anim_duration_ms = state.pending_switch_duration_ms
-                    log(f"[SWITCH_ANIM] Started after load: actual_duration={state.switch_anim_duration_ms}ms")
-
-                state.waiting_for_switch = False
-                state.waiting_prev_snapshot = None
-                state.pending_target_index = None
-                state.pending_switch_duration_ms = ANIM_SWITCH_KEYS_MS
-                log(f"[SWITCH_ANIM] Reset pending_duration to default: {ANIM_SWITCH_KEYS_MS}ms")
-
-            if state.open_anim_active and state.open_anim_t0 == 0.0:
-                state.open_anim_t0 = now()
-                state.bg_current_opacity = 0.0
-                state.pending_neighbors_load = True
-                log(f"[OPEN_ANIM] Started after first image load")
-
-        except Exception as e:
-            log(f"[ASYNC][CURRENT][ERR] Failed to create texture: {e!r}")
-            state.loading_current = False
-
-    state.loading_current = is_heavy
-    state.async_loader.submit(current_path, LoadPriority.CURRENT, on_current_loaded)
-
-    if skip_neighbors:
-        log(f"[PRELOAD] Skipping neighbors/thumbs during animation")
-        return
-
-    # Capture expected neighbor paths at submission time to avoid index drift
-    expected_prev_path = state.current_dir_images[new_index - 1] if new_index - 1 >= 0 else None
-    expected_next_path = state.current_dir_images[new_index + 1] if new_index + 1 < n else None
-
-    def on_neighbor_loaded(path: str, img, error: Optional[Exception]):
-        if error:
-            log(f"[ASYNC][NEIGHBOR][ERR] {os.path.basename(path)}: {error!r}")
-            return
-
-        try:
-            tex_info = image_to_textureinfo(img, path)
-
-            if path == expected_prev_path:
-                if state.cache.prev:
-                    unload_texture_deferred(state, state.cache.prev)
-                state.cache.prev = tex_info
-                log(f"[ASYNC][PREV] Loaded: {os.path.basename(path)}")
-            elif path == expected_next_path:
-                if state.cache.next:
-                    unload_texture_deferred(state, state.cache.next)
-                state.cache.next = tex_info
-                log(f"[ASYNC][NEXT] Loaded: {os.path.basename(path)}")
-        except Exception as e:
-            log(f"[ASYNC][NEIGHBOR][ERR] Failed to create texture: {e!r}")
-
-    if new_index - 1 >= 0:
-        state.async_loader.submit(
-            state.current_dir_images[new_index - 1],
-            LoadPriority.NEIGHBOR,
-            on_neighbor_loaded
-        )
-    if new_index + 1 < n:
-        state.async_loader.submit(
-            state.current_dir_images[new_index + 1],
-            LoadPriority.NEIGHBOR,
-            on_neighbor_loaded
-        )
-
-    schedule_thumbs(state, new_index)
+    _CURRENT_AND_NEIGHBOR_LOADER.preload(state, new_index, skip_neighbors)
 
 
 def switch_to(state: AppState, idx: int, animate: bool = True, anim_duration_ms: int = ANIM_SWITCH_KEYS_MS):
@@ -2798,6 +1351,9 @@ def switch_to(state: AppState, idx: int, animate: bool = True, anim_duration_ms:
         if len(state.switch_queue) < 20:
             state.switch_queue.append((direction, anim_duration_ms))
         return
+
+    # Cleanup playback for the file we're leaving
+    _ANIMATED_PLAYBACK.stop(state)
 
     state.is_panning = False
 
@@ -2837,6 +1393,15 @@ def process_switch_queue(state: AppState):
     if state.switch_anim_active or len(state.switch_queue) == 0:
         return
 
+    if len(state.switch_queue) >= RAPID_NAV_SKIP_THRESHOLD:
+        net = sum(d for d, _ in state.switch_queue)
+        state.switch_queue.clear()
+        n = len(state.current_dir_images)
+        target_idx = max(0, min(n - 1, state.index + net))
+        if target_idx != state.index:
+            switch_to(state, target_idx, animate=False)
+        return
+
     direction, duration_ms = state.switch_queue.popleft()
 
     n = len(state.current_dir_images)
@@ -2862,6 +1427,8 @@ def sanitize_view(state: AppState, view: ViewParams, ti: TextureInfo) -> ViewPar
     return sanitize_view_pure(view, ti.w, ti.h, state.screenW, state.screenH)
 
 
+_VIEW_MEMORY_LIMIT = 500
+
 def save_view_for_path(state: AppState, path: str, view: ViewParams):
     ti = state.cache.curr
     if not ti or not path:
@@ -2869,6 +1436,12 @@ def save_view_for_path(state: AppState, path: str, view: ViewParams):
 
     v = sanitize_view(state, view, ti)
     state.view_memory[path] = ViewParams(v.scale, v.offx, v.offy)
+    while len(state.view_memory) > _VIEW_MEMORY_LIMIT:
+        oldest = next(iter(state.view_memory))
+        del state.view_memory[oldest]
+    while len(state.user_zoom_memory) > _VIEW_MEMORY_LIMIT:
+        oldest = next(iter(state.user_zoom_memory))
+        del state.user_zoom_memory[oldest]
 
     if abs(view.offx - v.offx) > 1.0 or abs(view.offy - v.offy) > 1.0:
         log(f"[SAVE_VIEW] {os.path.basename(path)}: CORRECTED scale={v.scale:.3f} off=({v.offx:.1f},{v.offy:.1f}) [was ({view.offx:.1f},{view.offy:.1f})]")
@@ -2878,70 +1451,12 @@ def save_view_for_path(state: AppState, path: str, view: ViewParams):
 
 def start_toggle_zoom_animation(state: AppState):
     """Start non-blocking toggle zoom animation (F key / double-click)."""
-    if state.toggle_zoom_active:
-        return  # Already animating
-
-    if not state.cache.curr:
-        return
-
-    next_state = {2: 0, 0: 1, 1: 2}[state.zoom_state_cycle]
-
-    if next_state == 0:
-        target = view_for_1to1_centered(state)
-    elif next_state == 1:
-        target = state.last_fit_view
-    else:
-        current_path = state.current_dir_images[state.index] if state.index < len(state.current_dir_images) else None
-        if current_path and current_path in state.user_zoom_memory:
-            target = state.user_zoom_memory[current_path]
-        else:
-            target = state.last_fit_view
-
-    state.toggle_zoom_active = True
-    state.toggle_zoom_t0 = now()
-    state.toggle_zoom_from = ViewParams(state.view.scale, state.view.offx, state.view.offy)
-    state.toggle_zoom_to = target
-    state.toggle_zoom_target_state = next_state
-    log(f"[TOGGLE_ZOOM] Started: {state.zoom_state_cycle} -> {next_state}")
+    _TOGGLE_ZOOM_ANIMATION.start(state, trigger_scale_overlay)
 
 
 def update_toggle_zoom_animation(state: AppState):
     """Update toggle zoom animation each frame."""
-    if not state.toggle_zoom_active:
-        return
-
-    ti = state.cache.curr
-    if not ti:
-        state.toggle_zoom_active = False
-        return
-
-    dur = ANIM_TOGGLE_ZOOM_MS / 1000.0
-    t = 1.0 if dur <= 0.0 else (now() - state.toggle_zoom_t0) / dur
-
-    if t >= 1.0:
-        # Animation finished
-        state.toggle_zoom_active = False
-        state.view = clamp_pan(state.toggle_zoom_to, ti, state.screenW, state.screenH)
-        state.zoom_state_cycle = state.toggle_zoom_target_state
-        state.is_zoomed = (state.view.scale > state.last_fit_view.scale)
-
-        if state.index < len(state.current_dir_images):
-            path = state.current_dir_images[state.index]
-            save_view_for_path(state, path, state.view)
-            if state.zoom_state_cycle == 2:
-                state.user_zoom_memory[path] = ViewParams(state.view.scale, state.view.offx, state.view.offy)
-                log(f"[TOGGLE_ZOOM] Saved USER view: scale={state.view.scale:.3f}")
-
-        log(f"[TOGGLE_ZOOM] Finished: state={state.zoom_state_cycle} scale={state.view.scale:.3f}")
-        return
-
-    t_eased = ease_in_out_cubic(t)
-    cur = ViewParams(
-        scale=lerp(state.toggle_zoom_from.scale, state.toggle_zoom_to.scale, t_eased),
-        offx=lerp(state.toggle_zoom_from.offx, state.toggle_zoom_to.offx, t_eased),
-        offy=lerp(state.toggle_zoom_from.offy, state.toggle_zoom_to.offy, t_eased),
-    )
-    state.view = clamp_pan(cur, ti, state.screenW, state.screenH)
+    _TOGGLE_ZOOM_ANIMATION.update(state, ANIM_TOGGLE_ZOOM_MS, save_view_for_path)
 
 
 def apply_bg_opacity_anim(state: AppState):
@@ -2967,540 +1482,461 @@ def detect_double_click(state: AppState, x: int, y: int) -> bool:
     return False
 
 
-def main():
-    log("[MAIN] Starting application")
+class AppController:
+    def __init__(self):
+        self.state = AppState()
+        self.font_loaded = False
+        self.blur_enabled = False
+        self.first_render_done = False
 
-    start_path = None
-    for a in sys.argv[1:]:
-        p = os.path.abspath(a)
-        log(f"[ARGS] Checking argument: {a} -> {p}")
-        if os.path.exists(p):
-            start_path = p
-            log(f"[ARGS] Found valid path: {start_path}")
-            break
+    def setup(self, start_path) -> bool:
+        state = self.state
 
-    if not start_path:
-        log("[ARGS] No valid path provided, using current directory")
-
-    try:
-        log("[INIT] Initializing window")
-        init_window_and_blur(state := AppState())
-        log("[INIT] Window initialized successfully")
-    except Exception as e:
-        log(f"[INIT][CRITICAL] Failed to initialize window: {e!r}")
-        log(f"[INIT][CRITICAL] Traceback:\n{traceback.format_exc()}")
-        return
-
-    if start_path and os.path.isdir(start_path):
-        dirpath = start_path
-        images = list_images(dirpath)
-        start_index = 0
-    else:
-        dirpath = os.path.dirname(start_path) if start_path else os.getcwd()
-        images = list_images(dirpath)
-        if start_path:
-            try:
-                start_index = images.index(os.path.join(dirpath, os.path.basename(start_path)))
-            except ValueError:
-                start_index = 0
-        else:
-            start_index = 0
-
-    state.current_dir_images = images
-
-    log(f"[DIR] Found {len(images)} images in {dirpath}")
-
-    if not images:
-        log("[DIR] No images found, showing error screen")
         try:
-            while not rl.WindowShouldClose():
+            log("[INIT] Initializing window")
+            init_window_and_blur(state)
+            log("[INIT] Window initialized successfully")
+        except Exception as e:
+            log(f"[INIT][CRITICAL] Failed to initialize window: {e!r}")
+            log(f"[INIT][CRITICAL] Traceback:\n{traceback.format_exc()}")
+            return False
+
+        dirpath, images, start_index = scan_start_images(state, start_path)
+
+        state.current_dir_images = images
+
+        log(f"[DIR] Found {len(images)} images in {dirpath}")
+
+        if not images and not start_path:
+            selected_path = prompt_for_start_image(state, dirpath)
+            if selected_path:
+                start_path = selected_path
+                dirpath, images, start_index = scan_start_images(state, start_path)
+                state.current_dir_images = images
+                log(f"[DIR] Found {len(images)} images in {dirpath}")
+
+        if not images:
+            log("[DIR] No images found, showing interactive empty screen")
+            while not images:
+                selected_path = run_no_images_screen(state, dirpath)
+                if not selected_path:
+                    break
+                start_path = selected_path
+                dirpath, images, start_index = scan_start_images(state, start_path)
+                state.current_dir_images = images
+                log(f"[DIR] Found {len(images)} images in {dirpath}")
+
+            if not images:
+                try:
+                    rl.CloseWindow()
+                except Exception:
+                    pass
+                return False
+
+        log(f"[PRELOAD] Loading initial image at index {start_index}")
+
+        state.open_anim_active = True
+        state.open_anim_t0 = 0.0
+        state.view = ViewParams(scale=0.5, offx=state.screenW / 4, offy=state.screenH / 4)
+        state.bg_current_opacity = 0.0
+
+        preload_neighbors(state, start_index, skip_neighbors=True)
+        state.gallery_center_index = float(start_index)
+        schedule_thumbs(state, start_index)
+
+        log(f"[START] Starting main loop")
+        log(f"[DIR] {dirpath} files={len(images)} start={state.index} -> {os.path.basename(images[state.index])}")
+        atexit.register(lambda: log(f"[EXIT] frames={get_frame()} thumbs={len(state.thumb_cache)} q={len(state.thumb_queue)}"))
+
+        return True
+
+    def _poll_async(self):
+        state = self.state
+        if state.open_anim_active:
+            state.async_loader.poll_ui_events(max_events=2)
+        else:
+            state.async_loader.poll_ui_events(max_events=100)
+
+    def _update(self):
+        state = self.state
+        if not self.font_loaded and state.cache.curr and self.first_render_done and not state.open_anim_active:
+            state.unicode_font = load_unicode_font()
+            self.font_loaded = True
+            log("[INIT] Font loaded after first render")
+
+        if not self.blur_enabled and state.cache.curr and self.first_render_done and not state.open_anim_active:
+            # Initial blur setup is now handled by apply_bg_mode via _current_blur_enabled
+            self.blur_enabled = True
+            log("[INIT] Background mode active after first render")
+
+        if state.cache.curr and state.open_anim_active and state.view.scale == 0.5:
+            state.view = compute_fit_view(state, FIT_OPEN_SCALE)
+            log(f"[MAIN] Set FIT_OPEN view for animation")
+
+        process_deferred_unloads(state)
+
+        # Advance animated content playback
+        _ANIMATED_PLAYBACK.advance(
+            state,
+            rl.GetFrameTime() * 1000.0,
+            lambda old_ti: unload_texture_deferred(state, old_ti),
+        )
+
+        update_zoom_animation(state)
+        update_toggle_zoom_animation(state)
+        process_switch_queue(state)
+        apply_bg_opacity_anim(state)
+        update_close_button_alpha(state)
+        update_nav_buttons_fade(state)
+        update_scale_overlay(state)
+        update_gallery_visibility_and_slide(state)
+        update_gallery_scroll(state)
+        reconcile_gallery_target(state)
+        update_toolbar_alpha_ui(state)
+
+        if not state.open_anim_active:
+            process_thumb_queue(state)
+
+    def run(self):
+        state = self.state
+
+        # Key repeat state for navigation
+        nav_key_state = {
+            'next': {'pressed_time': 0.0, 'last_repeat': 0.0},
+            'prev': {'pressed_time': 0.0, 'last_repeat': 0.0},
+        }
+
+        try:
+            while True:
+                self._poll_async()
+                self._update()
+
+                should_close = rl.WindowShouldClose()
+                if should_close:
+                    break
+
+                # Handle window resize in windowed mode
+                # Only update screen dimensions - view will adapt automatically
+                if state.windowed_mode:
+                    new_w = rl.GetScreenWidth()
+                    new_h = rl.GetScreenHeight()
+                    if new_w != state.screenW or new_h != state.screenH:
+                        state.screenW = new_w
+                        state.screenH = new_h
+                        # Keep the current zoom on resize (don't snap to fit);
+                        # refresh the fit reference and clamp the view into the
+                        # new window bounds.
+                        if state.cache.curr:
+                            state.last_fit_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
+                            state.view = clamp_pan(state.view, state.cache.curr, new_w, new_h)
+
+                # Handle settings window input first (blocks other input when visible)
+                settings_active = state.ui.settings.visible
+                if settings_active:
+                    handle_settings_input(state)
+
                 rl.BeginDrawing()
                 apply_bg_mode(state)
-                RL_DrawText("No images found", 40, 40, 28, rl.GRAY)
-                rl.EndDrawing()
-        except Exception as e:
-            log(f"[ERROR_SCREEN][ERR] {e!r}")
-        finally:
-            try:
-                rl.CloseWindow()
-            except Exception:
-                pass
-        return
 
-    log(f"[PRELOAD] Loading initial image at index {start_index}")
+                mouse = rl.GetMousePosition()
 
-    state.open_anim_active = True
-    state.open_anim_t0 = 0.0
-    state.view = ViewParams(scale=0.5, offx=state.screenW / 4, offy=state.screenH / 4)
-    state.bg_current_opacity = 0.0
+                # ─── Context Menu Input ─────────────────────────────────────────────
+                context_menu_result = handle_context_menu_input(state, mouse, settings_active)
+                menu_consumed_click = context_menu_result.consumed_click
+                if context_menu_result.clicked_item is not None:
+                    item = context_menu_result.clicked_item
+                    log(f"[MENU] Clicked: {item.label}")
+                    if item.id == MenuItemId.COPY and state.index < len(state.current_dir_images):
+                        copy_image_to_clipboard(state.current_dir_images[state.index])
 
-    preload_neighbors(state, start_index, skip_neighbors=True)
-    state.gallery_center_index = float(start_index)
-    schedule_thumbs(state, start_index)
+                # ─── Toolbar Input ──────────────────────────────────────────────────
+                toolbar_clicked_button = update_toolbar_input(state, mouse, menu_consumed_click)
+                toolbar_consumed_click = toolbar_clicked_button is not None
+                if toolbar_clicked_button is not None:
+                    log(f"[TOOLBAR] Clicked: {toolbar_clicked_button.tooltip}")
 
-    log(f"[START] Starting main loop")
-    log(f"[DIR] {dirpath} files={len(images)} start={state.index} -> {os.path.basename(images[state.index])}")
-    atexit.register(lambda: log(f"[EXIT] frames={get_frame()} thumbs={len(state.thumb_cache)} q={len(state.thumb_queue)}"))
-
-    font_loaded = False
-    blur_enabled = False
-    first_render_done = False
-
-    # Key repeat state for navigation
-    nav_key_state = {
-        'next': {'pressed_time': 0.0, 'last_repeat': 0.0},
-        'prev': {'pressed_time': 0.0, 'last_repeat': 0.0},
-    }
-
-    try:
-        while True:
-            if state.open_anim_active:
-                state.async_loader.poll_ui_events(max_events=2)
-            else:
-                state.async_loader.poll_ui_events(max_events=100)
-
-            if not font_loaded and state.cache.curr and first_render_done and not state.open_anim_active:
-                state.unicode_font = load_unicode_font()
-                font_loaded = True
-                log("[INIT] Font loaded after first render")
-
-            if not blur_enabled and state.cache.curr and first_render_done and not state.open_anim_active:
-                # Initial blur setup is now handled by apply_bg_mode via _current_blur_enabled
-                blur_enabled = True
-                log("[INIT] Background mode active after first render")
-
-            if state.cache.curr and state.open_anim_active and state.view.scale == 0.5:
-                state.view = compute_fit_view(state, FIT_OPEN_SCALE)
-                log(f"[MAIN] Set FIT_OPEN view for animation")
-
-            process_deferred_unloads(state)
-            update_zoom_animation(state)
-            update_toggle_zoom_animation(state)
-            process_switch_queue(state)
-            apply_bg_opacity_anim(state)
-            update_close_button_alpha(state)
-            update_nav_buttons_fade(state)
-            update_gallery_visibility_and_slide(state)
-            update_gallery_scroll(state)
-            reconcile_gallery_target(state)
-            update_toolbar_alpha(state)
-
-            if not state.open_anim_active:
-                process_thumb_queue(state)
-
-            should_close = rl.WindowShouldClose()
-            if should_close:
-                break
-
-            # Handle window resize in windowed mode
-            # Only update screen dimensions - view will adapt automatically
-            if state.windowed_mode:
-                new_w = rl.GetScreenWidth()
-                new_h = rl.GetScreenHeight()
-                if new_w != state.screenW or new_h != state.screenH:
-                    state.screenW = new_w
-                    state.screenH = new_h
-                    # Recalculate view to fit new window size
-                    if state.cache.curr:
-                        new_view = compute_fit_view(state, FIT_DEFAULT_SCALE)
-                        state.view = new_view
-                        state.last_fit_view = new_view
-
-            # Handle settings window input first (blocks other input when visible)
-            settings_active = state.ui.settings.visible
-            if settings_active:
-                handle_settings_input(state)
-
-            rl.BeginDrawing()
-            apply_bg_mode(state)
-
-            mouse = rl.GetMousePosition()
-
-            # ─── Context Menu Input ─────────────────────────────────────────────
-            menu = state.ui.context_menu
-            menu_consumed_click = False  # Track if menu consumed the click
-
-            # When settings menu is open, block all other input
-            if settings_active:
-                menu_consumed_click = True  # Block all clicks
-            elif menu.visible:
-                menu.hover_index = get_context_menu_item_at(state, mouse.x, mouse.y)
-
-                if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-                    menu_consumed_click = True  # Block click from propagating
-                    if menu.hover_index >= 0:
-                        item = menu.items[menu.hover_index]
-                        log(f"[MENU] Clicked: {item.label}")
-                        # Execute action
-                        if item.id == MenuItemId.COPY:
-                            if state.index < len(state.current_dir_images):
-                                path = state.current_dir_images[state.index]
-                                copy_image_to_clipboard(path)
-                    menu.hide()
-
-                if rl.IsKeyPressed(KEY_CLOSE):
-                    menu.hide()
-
-            # Right-click shows context menu (don't skip rendering)
-            # Don't show context menu when settings window is open
-            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT) and not menu.visible and not state.ui.settings.visible:
-                menu.show(int(mouse.x), int(mouse.y))
-
-            # ─── Toolbar Input ──────────────────────────────────────────────────
-            toolbar = state.ui.toolbar
-
-            # Update toolbar visibility based on mouse position
-            if is_in_toolbar_zone(state, mouse.x, mouse.y):
-                toolbar.target_alpha = 1.0
-            else:
-                toolbar.target_alpha = 0.0
-
-            # Update toolbar hover
-            if toolbar.alpha > 0.1:
-                toolbar.hover_index = get_toolbar_button_at(state, mouse.x, mouse.y)
-            else:
-                toolbar.hover_index = -1
-
-            # Toolbar button click
-            toolbar_consumed_click = False
-            if rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and toolbar.hover_index >= 0 and not menu_consumed_click:
-                toolbar_consumed_click = True
-                btn = toolbar.buttons[toolbar.hover_index]
-                log(f"[TOOLBAR] Clicked: {btn.tooltip}")
-
-                if btn.id == ToolbarButtonId.SETTINGS:
-                    state.ui.settings.show()
-                elif state.index < len(state.current_dir_images):
-                    path = state.current_dir_images[state.index]
-
-                    if btn.id == ToolbarButtonId.ROTATE_CW:
-                        if rotate_image_file(path, clockwise=True):
-                            reload_current_image(state)
-                    elif btn.id == ToolbarButtonId.ROTATE_CCW:
-                        if rotate_image_file(path, clockwise=False):
-                            reload_current_image(state)
-                    elif btn.id == ToolbarButtonId.FLIP_H:
-                        if flip_image_file(path, horizontal=True):
-                            reload_current_image(state)
-
-            # ─── Regular Input ──────────────────────────────────────────────────
-            # Track if any UI element consumed the click
-            input_consumed = menu_consumed_click or toolbar_consumed_click or settings_active
-
-            if not input_consumed and check_close_button_click(state):
-                break
-
-            # Only mark activity on actual user input (mouse move, key/button press, wheel)
-            _mouse_delta = rl.GetMouseDelta()
-            if (_mouse_delta.x != 0 or _mouse_delta.y != 0
-                    or rl.GetMouseWheelMove() != 0
-                    or rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)
-                    or rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)
-                    or rl.GetKeyPressed() != 0):
-                state.idle_detector.mark_activity()
-
-            # Block all keyboard input when settings menu is open
-            if not settings_active:
-                if rl.IsKeyPressed(KEY_TOGGLE_HUD):
-                    state.show_hud = not state.show_hud
-
-                if rl.IsKeyPressed(KEY_TOGGLE_FILENAME):
-                    state.show_filename = not state.show_filename
-
-                if rl.IsKeyPressed(KEY_CYCLE_BG):
-                    state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
-                    state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
-
-            # DEL key - delete image to recycle bin (NEVER when settings active)
-            if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active and not settings_active:
-                if delete_current_image(state):
-                    if len(state.current_dir_images) == 0:
-                        # No more images - close app
-                        break
-                    rl.EndDrawing()
-                    increment_frame()
-                    continue
-
-            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
-                if rl.IsKeyDown(KEY_ZOOM_IN) or rl.IsKeyDown(KEY_ZOOM_IN_ALT):
-                    new_scale = min(state.view.scale * (1.0 + ZOOM_STEP_KEYS), MAX_ZOOM)
-                    nv = recompute_view_anchor_zoom(state.view, new_scale,
-                                                    (int(mouse.x), int(mouse.y)), state.cache.curr)
-                    nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
-                    start_zoom_animation(state, nv)
-                    state.is_zoomed = (nv.scale > state.last_fit_view.scale)
-                    state.zoom_state_cycle = 2
-                    if state.index < len(state.current_dir_images):
+                    if toolbar_clicked_button.id == ToolbarButtonId.SETTINGS:
+                        state.ui.settings.show()
+                    elif state.index < len(state.current_dir_images):
                         path = state.current_dir_images[state.index]
-                        save_view_for_path(state, path, nv)
-                        state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
 
-                if rl.IsKeyDown(KEY_ZOOM_OUT) or rl.IsKeyDown(KEY_ZOOM_OUT_ALT):
-                    nv = recompute_view_anchor_zoom(state.view, state.view.scale * (1.0 - ZOOM_STEP_KEYS),
-                                                    (int(mouse.x), int(mouse.y)), state.cache.curr)
-                    nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
-                    start_zoom_animation(state, nv)
-                    state.is_zoomed = (nv.scale > state.last_fit_view.scale)
-                    state.zoom_state_cycle = 2
-                    if state.index < len(state.current_dir_images):
-                        path = state.current_dir_images[state.index]
-                        save_view_for_path(state, path, nv)
-                        state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
+                        if toolbar_clicked_button.id == ToolbarButtonId.ROTATE_CW:
+                            run_transform_async(state, rotate_image_file, path, clockwise=True)
+                        elif toolbar_clicked_button.id == ToolbarButtonId.ROTATE_CCW:
+                            run_transform_async(state, rotate_image_file, path, clockwise=False)
+                        elif toolbar_clicked_button.id == ToolbarButtonId.FLIP_H:
+                            run_transform_async(state, flip_image_file, path, horizontal=True)
 
-            wheel = rl.GetMouseWheelMove()
-            # Mouse wheel zoom - blocked when settings menu is open (settings has its own scroll)
-            if wheel != 0.0 and state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
-                if is_mouse_over_gallery(state):
-                    n = len(state.current_dir_images)
-                    base = state.gallery_target_index if state.gallery_target_index is not None else state.index
-                    if wheel > 0:
-                        target = max(0, int(base) - 1)
+                # ─── Regular Input ──────────────────────────────────────────────────
+                # Track if any UI element consumed the click
+                input_consumed = menu_consumed_click or toolbar_consumed_click or settings_active
+
+                if not input_consumed and check_close_button_click(state):
+                    break
+
+                # Only mark activity on actual user input (mouse move, key/button press, wheel)
+                _mouse_delta = rl.GetMouseDelta()
+                if (_mouse_delta.x != 0 or _mouse_delta.y != 0
+                        or rl.GetMouseWheelMove() != 0
+                        or rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT)
+                        or rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_RIGHT)
+                        or rl.GetKeyPressed() != 0):
+                    state.idle_detector.mark_activity()
+
+                # Block all keyboard input when settings menu is open
+                if not settings_active:
+                    if rl.IsKeyPressed(KEY_TOGGLE_HUD):
+                        state.show_hud = not state.show_hud
+
+                    if rl.IsKeyPressed(KEY_TOGGLE_FILENAME):
+                        state.show_filename = not state.show_filename
+
+                    if rl.IsKeyPressed(KEY_CYCLE_BG):
+                        state.bg_mode_index = (state.bg_mode_index + 1) % len(BG_MODES)
+                        state.bg_target_opacity = BG_MODES[state.bg_mode_index]["opacity"]
+
+                # DEL key - delete image to recycle bin (NEVER when settings active)
+                if rl.IsKeyPressed(KEY_DELETE_IMAGE) and not state.open_anim_active and not settings_active:
+                    if delete_current_image(state):
+                        if len(state.current_dir_images) == 0:
+                            # No more images - close app
+                            break
+                        rl.EndDrawing()
+                        increment_frame()
+                        continue
+
+                if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
+                    if rl.IsKeyDown(KEY_ZOOM_IN) or rl.IsKeyDown(KEY_ZOOM_IN_ALT):
+                        apply_manual_zoom(
+                            state,
+                            1.0 + ZOOM_STEP_KEYS,
+                            (int(mouse.x), int(mouse.y)),
+                            MAX_ZOOM,
+                            start_zoom_animation,
+                            trigger_scale_overlay,
+                            save_view_for_path,
+                        )
+
+                    if rl.IsKeyDown(KEY_ZOOM_OUT) or rl.IsKeyDown(KEY_ZOOM_OUT_ALT):
+                        apply_manual_zoom(
+                            state,
+                            1.0 - ZOOM_STEP_KEYS,
+                            (int(mouse.x), int(mouse.y)),
+                            MAX_ZOOM,
+                            start_zoom_animation,
+                            trigger_scale_overlay,
+                            save_view_for_path,
+                        )
+
+                wheel = rl.GetMouseWheelMove()
+                # Mouse wheel zoom - blocked when settings menu is open (settings has its own scroll)
+                if wheel != 0.0 and state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
+                    if is_mouse_over_gallery(state):
+                        n = len(state.current_dir_images)
+                        base = state.gallery_target_index if state.gallery_target_index is not None else state.index
+                        if wheel > 0:
+                            target = max(0, int(base) - 1)
+                        else:
+                            target = min(n - 1, int(base) + 1)
+                        state.gallery_target_index = target
+                        state.gallery_last_wheel_time = now()
                     else:
-                        target = min(n - 1, int(base) + 1)
-                    state.gallery_target_index = target
-                    state.gallery_last_wheel_time = now()
-                else:
-                    new_scale = min(state.view.scale * (1.0 + wheel * ZOOM_STEP_WHEEL), MAX_ZOOM)
-                    nv = recompute_view_anchor_zoom(state.view, new_scale,
-                                                    (int(mouse.x), int(mouse.y)), state.cache.curr)
-                    nv = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
-                    start_zoom_animation(state, nv)
-                    state.is_zoomed = (nv.scale > state.last_fit_view.scale)
-                    state.zoom_state_cycle = 2
-                    if state.index < len(state.current_dir_images):
-                        path = state.current_dir_images[state.index]
-                        save_view_for_path(state, path, nv)
-                        state.user_zoom_memory[path] = ViewParams(nv.scale, nv.offx, nv.offy)
+                        apply_manual_zoom(
+                            state,
+                            1.0 + wheel * ZOOM_STEP_WHEEL,
+                            (int(mouse.x), int(mouse.y)),
+                            MAX_ZOOM,
+                            start_zoom_animation,
+                            trigger_scale_overlay,
+                            save_view_for_path,
+                        )
 
-            # Double-click zone: everywhere except navigation edges
-            # Use adaptive edge zones: at least NAV_EDGE_MIN_PX or 10% of screen
-            edge_zone = max(state.screenW * 0.10, NAV_EDGE_MIN_PX)
-            not_on_edge = (mouse.x > edge_zone and
-                          mouse.x < state.screenW - edge_zone)
+                # Double-click zone: everywhere except navigation edges
+                # Use adaptive edge zones: at least NAV_EDGE_MIN_PX or 10% of screen
+                edge_zone = max(state.screenW * 0.10, NAV_EDGE_MIN_PX)
+                not_on_edge = (mouse.x > edge_zone and
+                              mouse.x < state.screenW - edge_zone)
 
-            if not settings_active:
-                if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
-                    start_toggle_zoom_animation(state)
+                if not settings_active:
+                    if rl.IsKeyPressed(KEY_TOGGLE_ZOOM) and not state.toggle_zoom_active:
+                        start_toggle_zoom_animation(state)
 
-                # Toggle window mode (F key)
-                if rl.IsKeyPressed(KEY_TOGGLE_WINDOW):
-                    toggle_window_mode(state)
+                    # Toggle window mode (F key)
+                    if rl.IsKeyPressed(KEY_TOGGLE_WINDOW):
+                        toggle_window_mode(state)
 
-            # Always track clicks for double-click detection, even during animation
-            if not_on_edge and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not input_consumed:
-                is_double = detect_double_click(state, int(mouse.x), int(mouse.y))
-                if is_double and not state.toggle_zoom_active:
-                    start_toggle_zoom_animation(state)
+                # Always track clicks for double-click detection, even during animation
+                if not_on_edge and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT) and not input_consumed:
+                    is_double = detect_double_click(state, int(mouse.x), int(mouse.y))
+                    if is_double and not state.toggle_zoom_active:
+                        start_toggle_zoom_animation(state)
 
-            if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
-                img_rect = RL_Rect(state.view.offx, state.view.offy, state.cache.curr.w * state.view.scale,
-                                   state.cache.curr.h * state.view.scale)
-                over_img = (
-                        img_rect.x <= mouse.x <= img_rect.x + img_rect.width and img_rect.y <= mouse.y <= img_rect.y + img_rect.height)
+                if state.cache.curr and not state.open_anim_active and not state.toggle_zoom_active and not settings_active:
+                    img_rect = RL_Rect(state.view.offx, state.view.offy, state.cache.curr.w * state.view.scale,
+                                       state.cache.curr.h * state.view.scale)
+                    over_img = (
+                            img_rect.x <= mouse.x <= img_rect.x + img_rect.width and img_rect.y <= mouse.y <= img_rect.y + img_rect.height)
 
-                # Allow panning in any zoom mode (not just when zoomed)
-                if rl.IsMouseButtonPressed(
-                        rl.MOUSE_BUTTON_LEFT) and over_img and not is_point_in_close_button(state,
-                                                                                            mouse.x,
-                                                                                            mouse.y) and not input_consumed:
-                    state.is_panning = True
-                    state.pan_start_mouse = (mouse.x, mouse.y)
-                    state.pan_start_offset = (state.view.offx, state.view.offy)
+                    # Allow panning in any zoom mode (not just when zoomed)
+                    if rl.IsMouseButtonPressed(
+                            rl.MOUSE_BUTTON_LEFT) and over_img and not is_point_in_close_button(state,
+                                                                                                mouse.x,
+                                                                                                mouse.y) and not input_consumed:
+                        state.is_panning = True
+                        state.pan_start_mouse = (mouse.x, mouse.y)
+                        state.pan_start_offset = (state.view.offx, state.view.offy)
 
-                if rl.IsMouseButtonReleased(rl.MOUSE_BUTTON_LEFT):
+                    if rl.IsMouseButtonReleased(rl.MOUSE_BUTTON_LEFT):
+                        if state.is_panning:
+                            # Check if actual panning occurred (mouse moved significantly)
+                            dx = abs(mouse.x - state.pan_start_mouse[0])
+                            dy = abs(mouse.y - state.pan_start_mouse[1])
+                            actually_panned = dx > 5 or dy > 5
+
+                            state.is_panning = False
+                            if actually_panned and state.cache.curr and state.index < len(state.current_dir_images):
+                                path = state.current_dir_images[state.index]
+                                state.zoom_state_cycle = 2
+                                save_view_for_path(state, path, state.view)
+                                state.user_zoom_memory[path] = ViewParams(state.view.scale, state.view.offx,
+                                                                          state.view.offy)
+
                     if state.is_panning:
-                        # Check if actual panning occurred (mouse moved significantly)
-                        dx = abs(mouse.x - state.pan_start_mouse[0])
-                        dy = abs(mouse.y - state.pan_start_mouse[1])
-                        actually_panned = dx > 5 or dy > 5
+                        dx = mouse.x - state.pan_start_mouse[0]
+                        dy = mouse.y - state.pan_start_mouse[1]
+                        nv = ViewParams(scale=state.view.scale, offx=state.pan_start_offset[0] + dx,
+                                        offy=state.pan_start_offset[1] + dy)
+                        state.view = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
 
-                        state.is_panning = False
-                        if actually_panned and state.cache.curr and state.index < len(state.current_dir_images):
-                            path = state.current_dir_images[state.index]
-                            state.zoom_state_cycle = 2
-                            save_view_for_path(state, path, state.view)
-                            state.user_zoom_memory[path] = ViewParams(state.view.scale, state.view.offx,
-                                                                      state.view.offy)
+                if not state.open_anim_active and not settings_active:
+                    # Use adaptive edge zones for navigation
+                    nav_edge = max(state.screenW * 0.10, NAV_EDGE_MIN_PX)
+                    edge_left = (mouse.x <= nav_edge)
+                    edge_right = (mouse.x >= state.screenW - nav_edge)
 
-                if state.is_panning:
-                    dx = mouse.x - state.pan_start_mouse[0]
-                    dy = mouse.y - state.pan_start_mouse[1]
-                    nv = ViewParams(scale=state.view.scale, offx=state.pan_start_offset[0] + dx,
-                                    offy=state.pan_start_offset[1] + dy)
-                    state.view = clamp_pan(nv, state.cache.curr, state.screenW, state.screenH)
+                    # Navigation with key repeat support
+                    current_time = now()
 
-            if not state.open_anim_active and not settings_active:
-                # Use adaptive edge zones for navigation
-                nav_edge = max(state.screenW * 0.10, NAV_EDGE_MIN_PX)
-                edge_left = (mouse.x <= nav_edge)
-                edge_right = (mouse.x >= state.screenW - nav_edge)
-
-                # Navigation with key repeat support
-                current_time = now()
-
-                # Next image (Right, D)
-                next_down = rl.IsKeyDown(KEY_NEXT_IMAGE) or rl.IsKeyDown(KEY_NEXT_IMAGE_ALT)
-                if next_down:
-                    should_trigger = False
-                    if nav_key_state['next']['pressed_time'] == 0.0:
-                        # Key just pressed
-                        nav_key_state['next']['pressed_time'] = current_time
-                        nav_key_state['next']['last_repeat'] = current_time
-                        should_trigger = True
-                    elif current_time - nav_key_state['next']['pressed_time'] >= KEY_REPEAT_DELAY:
-                        # Key held long enough, check repeat interval
-                        if current_time - nav_key_state['next']['last_repeat'] >= KEY_REPEAT_INTERVAL:
+                    # Next image (Right, D)
+                    next_down = rl.IsKeyDown(KEY_NEXT_IMAGE) or rl.IsKeyDown(KEY_NEXT_IMAGE_ALT)
+                    if next_down:
+                        should_trigger = False
+                        if nav_key_state['next']['pressed_time'] == 0.0:
+                            # Key just pressed
+                            nav_key_state['next']['pressed_time'] = current_time
                             nav_key_state['next']['last_repeat'] = current_time
                             should_trigger = True
+                        elif current_time - nav_key_state['next']['pressed_time'] >= KEY_REPEAT_DELAY:
+                            # Key held long enough, check repeat interval
+                            if current_time - nav_key_state['next']['last_repeat'] >= KEY_REPEAT_INTERVAL:
+                                nav_key_state['next']['last_repeat'] = current_time
+                                should_trigger = True
 
-                    if should_trigger and state.index + 1 < len(state.current_dir_images):
-                        switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
-                else:
-                    nav_key_state['next']['pressed_time'] = 0.0
+                        if should_trigger and state.index + 1 < len(state.current_dir_images):
+                            switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
+                    else:
+                        nav_key_state['next']['pressed_time'] = 0.0
 
-                # Previous image (Left, A)
-                prev_down = rl.IsKeyDown(KEY_PREV_IMAGE) or rl.IsKeyDown(KEY_PREV_IMAGE_ALT)
-                if prev_down:
-                    should_trigger = False
-                    if nav_key_state['prev']['pressed_time'] == 0.0:
-                        # Key just pressed
-                        nav_key_state['prev']['pressed_time'] = current_time
-                        nav_key_state['prev']['last_repeat'] = current_time
-                        should_trigger = True
-                    elif current_time - nav_key_state['prev']['pressed_time'] >= KEY_REPEAT_DELAY:
-                        # Key held long enough, check repeat interval
-                        if current_time - nav_key_state['prev']['last_repeat'] >= KEY_REPEAT_INTERVAL:
+                    # Previous image (Left, A)
+                    prev_down = rl.IsKeyDown(KEY_PREV_IMAGE) or rl.IsKeyDown(KEY_PREV_IMAGE_ALT)
+                    if prev_down:
+                        should_trigger = False
+                        if nav_key_state['prev']['pressed_time'] == 0.0:
+                            # Key just pressed
+                            nav_key_state['prev']['pressed_time'] = current_time
                             nav_key_state['prev']['last_repeat'] = current_time
                             should_trigger = True
+                        elif current_time - nav_key_state['prev']['pressed_time'] >= KEY_REPEAT_DELAY:
+                            # Key held long enough, check repeat interval
+                            if current_time - nav_key_state['prev']['last_repeat'] >= KEY_REPEAT_INTERVAL:
+                                nav_key_state['prev']['last_repeat'] = current_time
+                                should_trigger = True
 
-                    if should_trigger and state.index - 1 >= 0:
-                        switch_to(state, state.index - 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
-                else:
-                    nav_key_state['prev']['pressed_time'] = 0.0
-
-                zoom_threshold = state.last_fit_view.scale * 1.1
-                is_significantly_zoomed = state.view.scale > zoom_threshold
-
-                gh = get_gallery_height(state.screenH)
-                yv = state.screenH - gh
-                gallery_is_visible = state.gallery_y < state.screenH
-                in_gallery_panel = gallery_is_visible and (yv <= mouse.y <= state.screenH)
-
-                if not is_significantly_zoomed and not in_gallery_panel and not input_consumed:
-                    if edge_right and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-                        if state.index + 1 < len(state.current_dir_images):
-                            switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
-                    if edge_left and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
-                        if state.index - 1 >= 0:
+                        if should_trigger and state.index - 1 >= 0:
                             switch_to(state, state.index - 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
+                    else:
+                        nav_key_state['prev']['pressed_time'] = 0.0
 
-            if not input_consumed and check_close_button_click(state):
-                break
+                    zoom_threshold = state.last_fit_view.scale * 1.1
+                    is_significantly_zoomed = state.view.scale > zoom_threshold
 
-            render_image(state)
+                    gh = get_gallery_height(state.screenH)
+                    yv = state.screenH - gh
+                    gallery_is_visible = state.gallery_y < state.screenH
+                    in_gallery_panel = gallery_is_visible and (yv <= mouse.y <= state.screenH)
 
-            if state.cache.curr and not first_render_done:
-                first_render_done = True
-                log("[RENDER] First render completed")
+                    if not is_significantly_zoomed and not in_gallery_panel and not input_consumed:
+                        if edge_right and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+                            if state.index + 1 < len(state.current_dir_images):
+                                switch_to(state, state.index + 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
+                        if edge_left and rl.IsMouseButtonPressed(rl.MOUSE_BUTTON_LEFT):
+                            if state.index - 1 >= 0:
+                                switch_to(state, state.index - 1, animate=True, anim_duration_ms=ANIM_SWITCH_KEYS_MS)
 
-            draw_nav_buttons(state)
-            draw_close_button(state)
-            draw_filename(state)
+                _settle = _post_toggle_settle
+                if _settle["active"]:
+                    _settle["n"] += 1
+                    # Re-assert the dark title bar: DWM often applies the dark
+                    # caption a few frames late (the "only after F twice" issue).
+                    set_titlebar_dark(state.hwnd)
+                    size_ok = (rl.GetScreenWidth() == _settle["w"] and
+                               rl.GetScreenHeight() == _settle["h"])
+                    if (size_ok and _settle["n"] >= 2) or _settle["n"] > 15:
+                        _settle["active"] = False
+                if not _settle["active"]:
+                    render_image(state)
 
-            try:
-                render_gallery(state)
-            except Exception as e:
-                log(f"[DRAW][GALLERY][EXC] {e!r}\n{traceback.format_exc()}")
+                if state.cache.curr and not self.first_render_done:
+                    self.first_render_done = True
+                    log("[RENDER] First render completed")
 
-            draw_loading_indicator(state)
+                draw_nav_buttons(state)
+                draw_close_button(state)
+                draw_filename_overlay(state)
+                draw_scale_overlay(state)
 
-            if state.show_hud:
-                hud_font_size = cfg.FONT_DISPLAY_SIZE
-                line_spacing = hud_font_size + 4
-                hud_color = RL_Color(200, 200, 200, 255)
+                try:
+                    clicked_gallery_idx = render_gallery(state)
+                    if clicked_gallery_idx is not None:
+                        switch_to(state, clicked_gallery_idx)
+                except Exception as e:
+                    log(f"[DRAW][GALLERY][EXC] {e!r}\n{traceback.format_exc()}")
 
-                # Build HUD lines
-                hud_lines = []
+                draw_loading_indicator(state)
 
-                # Line 1: Index/total
-                total = len(state.current_dir_images)
-                hud_lines.append(f"[{state.index + 1}/{total}]")
+                draw_hud(state)
 
-                # Line 2: Zoom with mode label
-                zoom_pct = int(state.view.scale * 100)
-                zoom_mode = get_zoom_mode_label(state)
-                hud_lines.append(f"{zoom_pct}% ({zoom_mode})")
+                # Draw toolbar, context menu and settings (on top of everything)
+                draw_toolbar_ui(state)
+                draw_context_menu_ui(state)
+                draw_settings_window(state)
 
-                # Line 3: Resolution (use 'x' for cross-platform compatibility)
-                if state.cache.curr:
-                    hud_lines.append(f"{state.cache.curr.w} x {state.cache.curr.h}")
+                rl.EndDrawing()
+                increment_frame()
 
-                # Line 4+: Metadata from EXIF
-                if state.index < len(state.current_dir_images):
-                    filepath = state.current_dir_images[state.index]
-                    metadata = get_image_metadata(filepath)
-                    if metadata:
-                        # Date taken
-                        if 'date' in metadata:
-                            hud_lines.append(metadata['date'])
-                        # Camera settings on one line
-                        camera_info = []
-                        if 'camera' in metadata:
-                            camera_info.append(metadata['camera'])
-                        if camera_info:
-                            hud_lines.append(' '.join(camera_info))
-                        # Exposure settings
-                        exp_info = []
-                        if 'focal' in metadata:
-                            exp_info.append(metadata['focal'])
-                        if 'aperture' in metadata:
-                            exp_info.append(metadata['aperture'])
-                        if 'exposure' in metadata:
-                            exp_info.append(metadata['exposure'])
-                        if 'iso' in metadata:
-                            exp_info.append(metadata['iso'])
-                        if exp_info:
-                            hud_lines.append(' | '.join(exp_info))
+                # Skip other key handling when settings is open
+                if state.ui.settings.visible:
+                    continue
 
-                # Calculate Y position from bottom
-                hud_y = state.screenH - (len(hud_lines) * line_spacing + 20)
+                if rl.IsKeyPressed(KEY_CLOSE):
+                    break
+                if should_close:
+                    break
+        except Exception as e:
+            log(f"[MAIN][CRITICAL] Unhandled exception in main loop: {e!r}")
+            log(f"[MAIN][CRITICAL] Traceback:\n{traceback.format_exc()}")
+        finally:
+            self._shutdown()
 
-                # Draw HUD with unicode font if available
-                for i, line in enumerate(hud_lines):
-                    y_pos = hud_y + i * line_spacing
-                    if state.unicode_font:
-                        try:
-                            rl.DrawTextEx(state.unicode_font, line.encode('utf-8'),
-                                          RL_V2(12, y_pos), hud_font_size, 1.0, hud_color)
-                            continue
-                        except Exception:
-                            pass
-                    RL_DrawText(line, 12, y_pos, hud_font_size, hud_color)
-
-            # Draw toolbar, context menu and settings (on top of everything)
-            draw_toolbar(state)
-            draw_context_menu(state)
-            draw_settings_window(state)
-
-            rl.EndDrawing()
-            increment_frame()
-
-            # Skip other key handling when settings is open
-            if state.ui.settings.visible:
-                continue
-
-            if rl.IsKeyPressed(KEY_CLOSE):
-                break
-            if should_close:
-                break
-    except Exception as e:
-        log(f"[MAIN][CRITICAL] Unhandled exception in main loop: {e!r}")
-        log(f"[MAIN][CRITICAL] Traceback:\n{traceback.format_exc()}")
-    finally:
+    def _shutdown(self):
+        state = self.state
         log("[CLEANUP] Starting cleanup")
         if state.async_loader:
             log("[CLEANUP] Shutting down async loader")
             state.async_loader.shutdown()
+        if state.playback:
+            log("[CLEANUP] Cleaning up playback")
+            _ANIMATED_PLAYBACK.stop(state)
         log("[CLEANUP] Processing deferred unloads")
         process_deferred_unloads(state)
         log("[CLEANUP] Unloading thumbnails")
@@ -3510,6 +1946,12 @@ def main():
                     rl.UnloadTexture(bt.texture)
             except Exception:
                 pass
+        log("[CLEANUP] Unloading large texture cache")
+        for ti in _LARGE_TEXTURE_CACHE.clear():
+            if not _is_texture_active(state, ti):
+                _TEXTURE_MANAGER.unload_texture(ti.tex)
+        log("[CLEANUP] Clearing animated content cache")
+        _ANIMATED_CONTENT_CACHE.clear()
         log("[CLEANUP] Unloading cached textures")
         for ti in (state.cache.prev, state.cache.curr, state.cache.next):
             try:
@@ -3523,6 +1965,30 @@ def main():
         except Exception:
             pass
         log("[CLEANUP] Cleanup complete")
+
+
+def main():
+    log("[MAIN] Starting application")
+    from imagura.i18n import load_persisted_language
+    load_persisted_language()
+    apply_saved_settings()
+
+    start_path = None
+    for a in sys.argv[1:]:
+        p = os.path.abspath(a)
+        log(f"[ARGS] Checking argument: {a} -> {p}")
+        if os.path.exists(p):
+            start_path = p
+            log(f"[ARGS] Found valid path: {start_path}")
+            break
+
+    if not start_path:
+        log("[ARGS] No valid path provided, using current directory")
+
+    controller = AppController()
+    if not controller.setup(start_path):
+        return
+    controller.run()
 
 
 if __name__ == "__main__":
