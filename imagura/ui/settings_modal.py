@@ -62,8 +62,11 @@ def _save_config_value(config_key: str, value, val_type: type, state: "AppState"
 def get_settings_color_scheme(state: "AppState") -> dict:
     """Get color scheme based on current background mode. Colors defined in config.py."""
     bg_color = state.ui.bg_color
-    opacity = state.ui.bg_current_opacity
+    opacity = state.ui.bg_target_opacity
 
+    # Check if transparent mode (target opacity < 1.0, i.e. blur or transparent modes).
+    # Use the target (selected mode) rather than the animated current value, otherwise
+    # the modal uses the transparent palette during transitions or in blur modes.
     is_transparent = opacity < 1.0
     is_light_bg = sum(bg_color) > 380  # White is 765, black is 0
 
