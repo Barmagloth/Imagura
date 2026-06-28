@@ -3,12 +3,15 @@
 !/pyproject.toml
 !/readme.md
 !/README_EN.md
+!/LICENSE
 !/imagura2.py
 !/imagura/
 !/packaging/
 !/tests/
 !/tools/
 !/docs/
+!/benchmarks/
+!/.github/
 __pycache__/
 *.py[cod]
 .imagura_cache/
