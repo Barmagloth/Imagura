@@ -1,6 +1,8 @@
 /*
 !.gitignore
 !/pyproject.toml
+!/readme.md
+!/README_EN.md
 !/imagura2.py
 !/imagura/
 !/packaging/
